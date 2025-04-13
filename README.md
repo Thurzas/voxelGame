@@ -1,6 +1,6 @@
-# Unity Minecraft Clone
+# Unity Voxel Game
 
-Un clone de Minecraft développé avec Unity, offrant une expérience sandbox immersive avec génération procédurale de terrain.
+C'est un template non fini de jeu voxel comme Minecraft, développé avec Unity, mon objectif est de fournir une expérience sandbox immersive avec génération procédurale de terrain.
 
 ![Screenshot du jeu](screenshots/game.png)
 

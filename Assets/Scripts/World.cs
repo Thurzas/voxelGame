@@ -11,6 +11,7 @@ public class World : MonoBehaviour
     public Material worldMaterial; // Le matériel avec l'atlas de texture pour tous les chunks
     public GameObject chunkPrefab; // Le prefab du GameObject Chunk (avec le script Chunk attaché)
     public int renderDistance = 8; // Nombre de chunks à charger/afficher autour du joueur (en rayon)
+    [SerializeField] private NoiseSettings terrainSettings;
 
     // --- Gestion des Chunks ---
     public Dictionary<Vector2Int, Chunk> activeChunks = new Dictionary<Vector2Int, Chunk>();
@@ -30,26 +31,30 @@ public class World : MonoBehaviour
 
     void Start()
     {
-         if(chunkPrefab == null) {
-             Debug.LogError("Chunk Prefab non assigné dans le World !");
-             return;
-         }
-         if(worldMaterial == null) {
-             Debug.LogError("World Material non assigné dans le World !");
-             return;
-         }
+        if (terrainSettings != null)
+        {
+            Noise.ApplySettings(terrainSettings);
+        }
+        if(chunkPrefab == null) {
+            Debug.LogError("Chunk Prefab non assigné dans le World !");
+            return;
+        }
+        if(worldMaterial == null) {
+            Debug.LogError("World Material non assigné dans le World !");
+            return;
+        }
 
-         // Trouver le joueur (suppose qu'il a le tag "Player")
-         GameObject player = GameObject.FindGameObjectWithTag("Player");
-         if(player != null) {
-             playerTransform = player.transform;
-         } else {
-             Debug.LogWarning("Joueur non trouvé (Tag 'Player'). Chargement initial autour de (0,0).");
-         }
+        // Trouver le joueur (suppose qu'il a le tag "Player")
+        GameObject player = GameObject.FindGameObjectWithTag("Player");
+        if(player != null) {
+            playerTransform = player.transform;
+        } else {
+            Debug.LogWarning("Joueur non trouvé (Tag 'Player'). Chargement initial autour de (0,0).");
+        }
 
-         // Commencer à charger les chunks initiaux autour du point de départ
-         // TODO: Implémenter un chargement/déchargement dynamique basé sur la position du joueur
-         GenerateInitialChunks();
+        // Commencer à charger les chunks initiaux autour du point de départ
+        // TODO: Implémenter un chargement/déchargement dynamique basé sur la position du joueur
+        GenerateInitialChunks();
     }
 
     void Update() {
@@ -82,7 +87,7 @@ public class World : MonoBehaviour
                  Vector3Int chunkPos3D = new Vector3Int(coords.x, 0, coords.y); // Y=0 pour la position du chunk
                  newChunk.Initialize(chunkPos3D, worldMaterial);
                  activeChunks.Add(coords, newChunk);
-                 Debug.Log($"Loaded Chunk at {coords}");
+                 //Debug.Log($"Loaded Chunk at {coords}");
              } else {
                  Debug.LogError($"Le prefab de Chunk n'a pas de script Chunk attaché !");
                  Destroy(newChunkObject);
@@ -153,5 +158,10 @@ public class World : MonoBehaviour
             Debug.LogWarning($"Tentative de modification d'un voxel dans un chunk non chargé à {worldPos}");
             // Idéalement, il faudrait charger le chunk ou mettre en file d'attente la modification
         }
+    }
+
+    void OnDestroy()
+    {
+        Noise.Cleanup();
     }
 }

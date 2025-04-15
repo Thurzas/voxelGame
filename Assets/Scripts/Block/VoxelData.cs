@@ -12,7 +12,12 @@ public enum VoxelType : ushort // ushort permet jusqu'à 65535 types de blocs
     Dirt = 2,
     Grass = 3,
     Wood = 4,
-    Leaves = 5
+    Leaves = 5,
+    Water = 6,
+    Lava = 7,
+    Sand = 8,
+    Snow = 9,
+    cobblestone = 10,
     // ... ajoutez autant de types que nécessaire
 }
 

@@ -116,19 +116,21 @@ public class Chunk : MonoBehaviour
 
     // --- Méthodes de génération (exemples) ---
 
-    void GenerateTerrain() // Placeholder très basique
+    void GenerateTerrain()
     {
+        Vector2 offset = new Vector2(chunkPosition.x, chunkPosition.z);
+        float[,] heightmap = Noise.GenerateHeightmap(Width, offset);
+        NoiseSettings settings = Noise.CurrentSettings;
+        
         for (int x = 0; x < Width; x++)
         {
             for (int z = 0; z < Depth; z++)
             {
-                // Calculer la position mondiale pour le bruit Perlin
-                float worldX = x + chunkPosition.x * Width;
-                float worldZ = z + chunkPosition.z * Depth;
-
-                // Utiliser le bruit Perlin pour déterminer la hauteur du sol
-                int groundHeight = Mathf.FloorToInt(Mathf.PerlinNoise(worldX * 0.05f, worldZ * 0.05f) * 15) + 64; // Hauteur de base + variation
-
+                float heightValue = heightmap[x, z];
+                // Modification ici : le bruit (0-1) est d'abord centré autour de 0 (-0.5 à 0.5)
+                // puis multiplié par heightMultiplier et enfin ajouté à baseHeight
+                int groundHeight = Mathf.FloorToInt(settings.baseHeight + (heightValue - 0.5f) * settings.heightMultiplier);
+                
                 for (int y = 0; y < Height; y++)
                 {
                     if (y < groundHeight - 3)
@@ -145,12 +147,13 @@ public class Chunk : MonoBehaviour
                     }
                     else
                     {
-                        voxelData[x, y, z] = new Voxel(VoxelType.Air); // Air au-dessus
+                        voxelData[x, y, z] = new Voxel(VoxelType.Air);
                     }
                 }
             }
         }
-         needsMeshUpdate = true; // Marquer pour la génération de mesh après la génération du terrain
+        
+        needsMeshUpdate = true;
     }
 
     void CheckNeighborChunksForUpdate(int x, int y, int z)
@@ -208,17 +211,17 @@ public class Chunk : MonoBehaviour
                         Vector3 pos = new Vector3(x, y, z);
                         // Vérifier chaque face
                         // Face +X (Droite)
-                        if (!IsVoxelSolid(x + 1, y, z)) vertexIndex = AddFace(vertices, triangles, uvs, vertexIndex, pos, Vector3.right, VoxelTypeToTexture(voxelData[x, y, z].type));
+                        if (!IsVoxelSolid(x + 1, y, z)) vertexIndex = AddFace(vertices, triangles, uvs, vertexIndex, pos, Vector3.right, VoxelTypeToTexture(voxelData[x, y, z].type, Vector3.right));
                         // Face -X (Gauche)
-                        if (!IsVoxelSolid(x - 1, y, z)) vertexIndex = AddFace(vertices, triangles, uvs, vertexIndex, pos, Vector3.left, VoxelTypeToTexture(voxelData[x, y, z].type));
+                        if (!IsVoxelSolid(x - 1, y, z)) vertexIndex = AddFace(vertices, triangles, uvs, vertexIndex, pos, Vector3.left, VoxelTypeToTexture(voxelData[x, y, z].type, Vector3.left));
                         // Face +Y (Haut)
-                        if (!IsVoxelSolid(x, y + 1, z)) vertexIndex = AddFace(vertices, triangles, uvs, vertexIndex, pos, Vector3.up, VoxelTypeToTexture(voxelData[x, y, z].type));
+                        if (!IsVoxelSolid(x, y + 1, z)) vertexIndex = AddFace(vertices, triangles, uvs, vertexIndex, pos, Vector3.up, VoxelTypeToTexture(voxelData[x, y, z].type, Vector3.up));
                         // Face -Y (Bas)
-                        if (!IsVoxelSolid(x, y - 1, z)) vertexIndex = AddFace(vertices, triangles, uvs, vertexIndex, pos, Vector3.down, VoxelTypeToTexture(voxelData[x, y, z].type));
+                        if (!IsVoxelSolid(x, y - 1, z)) vertexIndex = AddFace(vertices, triangles, uvs, vertexIndex, pos, Vector3.down, VoxelTypeToTexture(voxelData[x, y, z].type, Vector3.down));
                         // Face +Z (Avant)
-                        if (!IsVoxelSolid(x, y, z + 1)) vertexIndex = AddFace(vertices, triangles, uvs, vertexIndex, pos, Vector3.forward, VoxelTypeToTexture(voxelData[x, y, z].type));
+                        if (!IsVoxelSolid(x, y, z + 1)) vertexIndex = AddFace(vertices, triangles, uvs, vertexIndex, pos, Vector3.forward, VoxelTypeToTexture(voxelData[x, y, z].type, Vector3.forward));
                         // Face -Z (Arrière)
-                        if (!IsVoxelSolid(x, y, z - 1)) vertexIndex = AddFace(vertices, triangles, uvs, vertexIndex, pos, Vector3.back, VoxelTypeToTexture(voxelData[x, y, z].type));
+                        if (!IsVoxelSolid(x, y, z - 1)) vertexIndex = AddFace(vertices, triangles, uvs, vertexIndex, pos, Vector3.back, VoxelTypeToTexture(voxelData[x, y, z].type, Vector3.back));
                     }
                 }
             }
@@ -259,19 +262,34 @@ public class Chunk : MonoBehaviour
     // TODO: Implémenter correctement les UVs basés sur l'atlas de texture
     // TODO: Ajouter les données de texture correctes (via VoxelTypeToTexture)
     int AddFace(System.Collections.Generic.List<Vector3> vertices, System.Collections.Generic.List<int> triangles, System.Collections.Generic.List<Vector2> uvs, int vertexIndex, Vector3 position, Vector3 direction, Rect uvCoords) {
-        // Simplifié: utilise des vertices prédéfinis pour chaque direction
-        // Il faudrait une structure de données plus propre pour ça.
         Vector3[] faceVertices = GetFaceVertices(direction);
         int[] faceTriangles = { 0, 1, 2, 0, 2, 3 }; // Ordre standard pour un quad
 
+        // Ajouter un petit offset pour éviter le texture bleeding
+        float uvPadding = 0.001f;
+        Rect paddedUV = new Rect(
+            uvCoords.x + uvPadding,
+            uvCoords.y + uvPadding,
+            uvCoords.width - (uvPadding * 2),
+            uvCoords.height - (uvPadding * 2)
+        );
+
         for (int i = 0; i < 4; i++) {
-             vertices.Add(position + faceVertices[i]);
-             // TODO: Calculer les vrais UVs basés sur uvCoords
-             uvs.Add(GetUVForVertex(i, uvCoords)); // Placeholder UV calculation
+            vertices.Add(position + faceVertices[i]);
+            
+            // Mapper correctement les UVs selon l'ordre des vertices
+            Vector2 uv = Vector2.zero;
+            switch(i) {
+                case 0: uv = new Vector2(paddedUV.xMin, paddedUV.yMin); break; // Bas gauche
+                case 1: uv = new Vector2(paddedUV.xMin, paddedUV.yMax); break; // Haut gauche
+                case 2: uv = new Vector2(paddedUV.xMax, paddedUV.yMax); break; // Haut droite
+                case 3: uv = new Vector2(paddedUV.xMax, paddedUV.yMin); break; // Bas droite
+            }
+            uvs.Add(uv);
         }
 
         for (int i = 0; i < 6; i++) {
-             triangles.Add(vertexIndex + faceTriangles[i]);
+            triangles.Add(vertexIndex + faceTriangles[i]);
         }
 
         return vertexIndex + 4;
@@ -279,17 +297,33 @@ public class Chunk : MonoBehaviour
 
     // Placeholder pour obtenir les coordonnées UV d'un type de voxel
     // Devrait retourner un Rect(x, y, width, height) dans l'atlas 0..1
-    Rect VoxelTypeToTexture(VoxelType type) {
-        // Exemple TRES simplifié, à remplacer par une vraie logique d'atlas
-        float textureSize = 1f / 16f; // Si atlas 16x16 textures
-        switch (type) {
-            case VoxelType.Grass: return new Rect(0 * textureSize, 15 * textureSize, textureSize, textureSize); // Coordonnées exemple
-            case VoxelType.Dirt: return new Rect(2 * textureSize, 15 * textureSize, textureSize, textureSize);
-            case VoxelType.Stone: return new Rect(1 * textureSize, 15 * textureSize, textureSize, textureSize);
-            case VoxelType.Wood: return new Rect(4*textureSize, 14*textureSize, textureSize, textureSize);
-            case VoxelType.Leaves: return new Rect(4*textureSize, 12*textureSize, textureSize, textureSize);
-            default: return new Rect(15 * textureSize, 0 * textureSize, textureSize, textureSize); // Texture "missing"
-        }
+    Rect VoxelTypeToTexture(VoxelType type, Vector3 normal)
+    {
+        var props = VoxelProperties.Instance.GetPropertiesForType(type);
+        
+        // Configuration pour un atlas 256x256 avec des tiles 16x16
+        const int ATLAS_SIZE = 256;
+        const int TILE_SIZE = 16;
+        const int TILES_PER_ROW = ATLAS_SIZE / TILE_SIZE; // = 16
+        const float UV_TILE_SIZE = 1f / TILES_PER_ROW;    // = 0.0625f
+        
+        Vector2Int coords;
+        if (normal == Vector3.up)
+            coords = props.topTextureCoords;
+        else if (normal == Vector3.down)
+            coords = props.bottomTextureCoords;
+        else
+            coords = props.sideTextureCoords;
+
+        // Calculer les coordonnées UV
+        float u = coords.x * UV_TILE_SIZE;
+        float v = 1f - ((coords.y + 1) * UV_TILE_SIZE); // Première ligne en haut
+
+        Rect result = new Rect(u, v, UV_TILE_SIZE, UV_TILE_SIZE);
+        
+        //Debug.Log($"VoxelType: {type}, Normal: {normal}, Tile: {coords}, UV: {result}");
+        
+        return result;
     }
 
     // Placeholder pour mapper les coins du quad aux UVs

@@ -10,7 +10,7 @@ public class PlayerInteraction : MonoBehaviour
 
     private GameObject currentHighlight;
     private Vector3Int lastHitBlockPos;
-    private bool isHighlightVisible = false;
+    private bool isHighlightVisible = true;
 
     void Start()
     {
@@ -86,12 +86,18 @@ public class PlayerInteraction : MonoBehaviour
             TryPlaceBlock();
         }
 
-         // Changer le bloc sélectionné (exemple simple avec les touches numériques)
-         if (Input.GetKeyDown(KeyCode.Alpha1)) selectedBlockType = VoxelType.Stone;
-         if (Input.GetKeyDown(KeyCode.Alpha2)) selectedBlockType = VoxelType.Dirt;
-         if (Input.GetKeyDown(KeyCode.Alpha3)) selectedBlockType = VoxelType.Grass;
-         if (Input.GetKeyDown(KeyCode.Alpha4)) selectedBlockType = VoxelType.Wood;
-         if (Input.GetKeyDown(KeyCode.Alpha5)) selectedBlockType = VoxelType.Leaves;
+        // Touche T: Générer un arbre
+        if (Input.GetKeyDown(KeyCode.T))
+        {
+            TryPlaceTree();
+        }
+
+        // Sélection du bloc avec les touches numériques
+        if (Input.GetKeyDown(KeyCode.Alpha1)) selectedBlockType = VoxelType.Stone;
+        if (Input.GetKeyDown(KeyCode.Alpha2)) selectedBlockType = VoxelType.Dirt;
+        if (Input.GetKeyDown(KeyCode.Alpha3)) selectedBlockType = VoxelType.Grass;
+        if (Input.GetKeyDown(KeyCode.Alpha4)) selectedBlockType = VoxelType.Wood;
+        if (Input.GetKeyDown(KeyCode.Alpha5)) selectedBlockType = VoxelType.Leaves;
     }
 
 
@@ -139,6 +145,39 @@ public class PlayerInteraction : MonoBehaviour
 
             Debug.Log($"Trying to place block at {placePos}");
             World.Instance?.SetVoxel(placePos, selectedBlockType); // Demander au monde de placer le bloc
+        }
+    }
+
+    void TryPlaceTree()
+    {
+        Ray ray = playerCamera.ScreenPointToRay(new Vector3(Screen.width / 2f, Screen.height / 2f));
+        RaycastHit hit;
+
+        if (Physics.Raycast(ray, out hit, reach))
+        {
+            Vector3 pointOutsideBlock = hit.point + hit.normal * 0.01f;
+            Vector3Int placePos = Vector3Int.FloorToInt(pointOutsideBlock);
+
+            Chunk targetChunk = World.Instance.GetChunkFromWorldPosition(pointOutsideBlock);
+            
+            if (targetChunk == null)
+            {
+                Debug.Log("Tree placement failed: No chunk found at target location");
+                return;
+            }
+
+            var blockBelow = targetChunk.GetVoxel(placePos.x, placePos.y - 1, placePos.z);
+            Debug.Log($"Block below tree position: {blockBelow.type}");
+
+            if (TreeGenerator.CanGenerateTree(placePos, targetChunk))
+            {
+                Debug.Log($"Successfully generating tree at position: {placePos}");
+                TreeGenerator.GenerateTree(placePos, targetChunk);
+            }
+            else
+            {
+                Debug.Log($"Cannot generate tree at {placePos} - Make sure there's grass below and enough space above");
+            }
         }
     }
 }

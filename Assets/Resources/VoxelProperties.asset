@@ -1,0 +1,78 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1b167103363e83b4abbe960feeac190d, type: 3}
+  m_Name: VoxelProperties
+  m_EditorClassIdentifier: 
+  voxelTypes:
+  - type: 1
+    displayName: Pierre
+    isTransparent: 0
+    isLiquid: 0
+    topTextureCoords: {x: 0, y: 0}
+    sideTextureCoords: {x: 0, y: 0}
+    bottomTextureCoords: {x: 0, y: 0}
+  - type: 2
+    displayName: Terre
+    isTransparent: 0
+    isLiquid: 0
+    topTextureCoords: {x: 1, y: 1}
+    sideTextureCoords: {x: 1, y: 1}
+    bottomTextureCoords: {x: 1, y: 1}
+  - type: 3
+    displayName: Herbe
+    isTransparent: 0
+    isLiquid: 0
+    topTextureCoords: {x: 2, y: 1}
+    sideTextureCoords: {x: 1, y: 0}
+    bottomTextureCoords: {x: 1, y: 1}
+  - type: 4
+    displayName: Bois
+    isTransparent: 0
+    isLiquid: 0
+    topTextureCoords: {x: 3, y: 1}
+    sideTextureCoords: {x: 3, y: 0}
+    bottomTextureCoords: {x: 3, y: 1}
+  - type: 6
+    displayName: Eau
+    isTransparent: 1
+    isLiquid: 1
+    topTextureCoords: {x: 4, y: 0}
+    sideTextureCoords: {x: 4, y: 0}
+    bottomTextureCoords: {x: 4, y: 0}
+  - type: 7
+    displayName: Lave
+    isTransparent: 0
+    isLiquid: 1
+    topTextureCoords: {x: 5, y: 0}
+    sideTextureCoords: {x: 5, y: 0}
+    bottomTextureCoords: {x: 5, y: 0}
+  - type: 8
+    displayName: Sable
+    isTransparent: 0
+    isLiquid: 0
+    topTextureCoords: {x: 6, y: 0}
+    sideTextureCoords: {x: 6, y: 0}
+    bottomTextureCoords: {x: 6, y: 0}
+  - type: 9
+    displayName: Neige
+    isTransparent: 0
+    isLiquid: 0
+    topTextureCoords: {x: 7, y: 0}
+    sideTextureCoords: {x: 7, y: 0}
+    bottomTextureCoords: {x: 7, y: 0}
+  - type: 5
+    displayName: Feuilles
+    isTransparent: 1
+    isLiquid: 0
+    topTextureCoords: {x: 2, y: 0}
+    sideTextureCoords: {x: 2, y: 0}
+    bottomTextureCoords: {x: 2, y: 0}

@@ -5,7 +5,37 @@ public static class Noise
     private static ComputeShader heightmapShader;
     private static RenderTexture heightmapTexture;
     private static int currentMapSize;
+    
+    public static int Seed { get; private set; }
+    
+    // Paramètres de climat
+    public static float TemperatureScale { get; set; } = 100f;
+    public static float HumidityScale { get; set; } = 100f;
 
+    public static void Initialize(int seed)
+    {
+        Seed = seed;
+        Random.InitState(seed);
+    }
+
+    public static float GetTemperature(float x, float z)
+    {
+        float noise = Mathf.PerlinNoise(
+            (x + Seed) / TemperatureScale, 
+            (z + Seed) / TemperatureScale
+        );
+        return (noise * 2f) - 1f; // Convert to range -1 to 1
+    }
+
+    public static float GetHumidity(float x, float z)
+    {
+        float noise = Mathf.PerlinNoise(
+            (x + Seed + 1000) / HumidityScale, 
+            (z + Seed + 1000) / HumidityScale
+        );
+        return noise; // Range 0 to 1
+    }
+    
     public static NoiseSettings CurrentSettings { get; private set; }
 
     public static void ApplySettings(NoiseSettings settings)
@@ -20,7 +50,7 @@ public static class Noise
     public static float Persistence { get; set; } = 0.5f;
     public static float Lacunarity { get; set; } = 2.0f;
 
-    private static void Initialize(int size)
+    private static void InitializeHeightmapResources(int size)
     {
         // Charger le shader seulement s'il n'est pas déjà chargé
         if (heightmapShader == null)
@@ -46,7 +76,7 @@ public static class Noise
 
     public static float[,] GenerateHeightmap(int size, Vector2 offset)
     {
-        Initialize(size);
+        InitializeHeightmapResources(size);
 
         if (heightmapShader == null || heightmapTexture == null)
         {

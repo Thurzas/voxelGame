@@ -9,48 +9,48 @@ C'est un template non fini de jeu voxel comme Minecraft, développé avec Unity,
 ### Système de Base
 - ✅ Contrôles FPS fluides (WASD + souris)
 - ✅ Placement et destruction de blocs basique
-
-C'est tout ! Le reste est en développement 😊
+- ✅ Système de biomes initial
+- ✅ Génération de terrain basique
 
 ## 🗺️ Roadmap
 
-### Phase 1 : Système de Monde (En cours)
-- [ ] Génération procédurale de terrain par chunks
-- [ ] Système de biomes
+### Phase 1 : Système de Monde (En cours - 40% complété)
+- [x] Génération procédurale de terrain par chunks
+- [x] Système de biomes
 - [ ] Gestion du chargement/déchargement des chunks
 - [ ] Système de sauvegarde des modifications
 
-### Phase 2 : Physique et Interactions
+### Phase 2 : Physique et Interactions (Non commencé)
 - [ ] Système de physique réaliste
 - [ ] Automates cellulaires pour les liquides
 - [ ] Propagation des modifications (gravité, effondrement)
 - [ ] Interactions entre les blocs
 
-### Phase 3 : Interface et Inventaire
+### Phase 3 : Interface et Inventaire (Non commencé)
 - [ ] Interface utilisateur de base
 - [ ] Système d'inventaire
 - [ ] Menu pause
 - [ ] Interface de debug
 
-### Phase 4 : Gameplay Avancé
+### Phase 4 : Gameplay Avancé (Non commencé)
 - [ ] Crafting
 - [ ] Système jour/nuit
 - [ ] Météo dynamique
 - [ ] Dégâts de chute
 
-### Phase 5 : Multijoueur
+### Phase 5 : Multijoueur (Non commencé)
 - [ ] Support réseau de base
 - [ ] Synchronisation des chunks
 - [ ] Chat in-game
 - [ ] Sauvegarde/chargement multijoueur
 
-### Phase 6 : Contenu
+### Phase 6 : Contenu (Non commencé)
 - [ ] Mobs hostiles et passifs
 - [ ] Système de combat
 - [ ] Agriculture
 - [ ] Système de quêtes basique
 
-### Phase 7 : Optimisation et Polish
+### Phase 7 : Optimisation et Polish (Non commencé)
 - [ ] LOD (Level of Detail) pour les chunks distants
 - [ ] Optimisation des performances
 - [ ] UI/UX améliorée
@@ -95,3 +95,4 @@ Ce projet est sous licence MIT - voir le fichier [LICENSE.md](LICENSE.md) pour p
 
 ---
 Développé avec ❤️ par Thurzas
+

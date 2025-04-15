@@ -13,6 +13,10 @@ public class World : MonoBehaviour
     public int renderDistance = 8; // Nombre de chunks à charger/afficher autour du joueur (en rayon)
     [SerializeField] private NoiseSettings terrainSettings;
 
+    [Header("World Generation")]
+    public int worldSeed = 0;
+    public BiomeSettings[] biomes;
+
     // --- Gestion des Chunks ---
     public Dictionary<Vector2Int, Chunk> activeChunks = new Dictionary<Vector2Int, Chunk>();
     private Transform playerTransform; // Pour savoir où charger/décharger les chunks
@@ -38,10 +42,8 @@ public class World : MonoBehaviour
         if (Instance == null) Instance = this;
         else if (Instance != this) Destroy(gameObject);
 
-        if (terrainSettings != null)
-        {
-            Noise.ApplySettings(terrainSettings);
-        }
+        // Initialiser le bruit avec la seed
+        Noise.Initialize(worldSeed);
         
         // Vérifications de base
         if (chunkPrefab == null || worldMaterial == null)
@@ -213,6 +215,23 @@ public class World : MonoBehaviour
             Debug.LogWarning($"Tentative de modification d'un voxel dans un chunk non chargé à {worldPos}");
             // Idéalement, il faudrait charger le chunk ou mettre en file d'attente la modification
         }
+    }
+
+    public BiomeSettings GetBiomeAt(Vector3 worldPos)
+    {
+        float temperature = Noise.GetTemperature(worldPos.x, worldPos.z);
+        float humidity = Noise.GetHumidity(worldPos.x, worldPos.z);
+
+        foreach (var biome in biomes)
+        {
+            if (biome.IsInBiome(temperature, humidity))
+            {
+                return biome;
+            }
+        }
+
+        // Retourner un biome par défaut si aucun ne correspond
+        return biomes[0];
     }
 
     void OnDestroy()

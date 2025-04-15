@@ -9,12 +9,12 @@ MonoBehaviour:
   m_GameObject: {fileID: 0}
   m_Enabled: 1
   m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 4413614820c30104c875490bd937e582, type: 3}
-  m_Name: NoiseSettings
+  m_Script: {fileID: 11500000, guid: d6e4196120d8ae341934f665273c369f, type: 3}
+  m_Name: HillsSettings
   m_EditorClassIdentifier: 
-  baseHeight: 64
-  heightMultiplier: 64
-  scale: 50
-  octaves: 6
-  persistence: 0.5
-  lacunarity: 2
+  biomeName: Plaines
+  terrainSettings: {fileID: 11400000, guid: f8af2a19c584c3848ab6a28ceb35af07, type: 2}
+  minTemperature: 0
+  maxTemperature: 0.3
+  minHumidity: 0.5
+  maxHumidity: 0.65

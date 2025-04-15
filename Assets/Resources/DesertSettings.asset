@@ -1,0 +1,20 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d6e4196120d8ae341934f665273c369f, type: 3}
+  m_Name: DesertSettings
+  m_EditorClassIdentifier: 
+  biomeName: Plaines
+  terrainSettings: {fileID: 0}
+  minTemperature: 0.526
+  maxTemperature: 1
+  minHumidity: 0
+  maxHumidity: 0.156

@@ -119,16 +119,21 @@ public class Chunk : MonoBehaviour
     void GenerateTerrain()
     {
         Vector2 offset = new Vector2(chunkPosition.x, chunkPosition.z);
+        Vector3 worldPos = new Vector3(chunkPosition.x * Width, 0, chunkPosition.z * Depth);
+        
+        // Obtenir le biome pour ce chunk
+        BiomeSettings biome = World.Instance.GetBiomeAt(worldPos);
+        NoiseSettings settings = biome.terrainSettings;
+        
+        // Appliquer les paramètres du biome
+        Noise.ApplySettings(settings);
         float[,] heightmap = Noise.GenerateHeightmap(Width, offset);
-        NoiseSettings settings = Noise.CurrentSettings;
         
         for (int x = 0; x < Width; x++)
         {
             for (int z = 0; z < Depth; z++)
             {
                 float heightValue = heightmap[x, z];
-                // Modification ici : le bruit (0-1) est d'abord centré autour de 0 (-0.5 à 0.5)
-                // puis multiplié par heightMultiplier et enfin ajouté à baseHeight
                 int groundHeight = Mathf.FloorToInt(settings.baseHeight + (heightValue - 0.5f) * settings.heightMultiplier);
                 
                 for (int y = 0; y < Height; y++)

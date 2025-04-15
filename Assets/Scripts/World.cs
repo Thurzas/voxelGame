@@ -17,6 +17,10 @@ public class World : MonoBehaviour
     public Dictionary<Vector2Int, Chunk> activeChunks = new Dictionary<Vector2Int, Chunk>();
     private Transform playerTransform; // Pour savoir où charger/décharger les chunks
 
+    private Vector2Int lastPlayerChunkCoord;
+    private HashSet<Vector2Int> chunksToLoad = new HashSet<Vector2Int>();
+    private HashSet<Vector2Int> chunksToUnload = new HashSet<Vector2Int>();
+
     void Awake()
     {
         if (Instance != null && Instance != this)
@@ -31,51 +35,107 @@ public class World : MonoBehaviour
 
     void Start()
     {
+        if (Instance == null) Instance = this;
+        else if (Instance != this) Destroy(gameObject);
+
         if (terrainSettings != null)
         {
             Noise.ApplySettings(terrainSettings);
         }
-        if(chunkPrefab == null) {
-            Debug.LogError("Chunk Prefab non assigné dans le World !");
-            return;
-        }
-        if(worldMaterial == null) {
-            Debug.LogError("World Material non assigné dans le World !");
+        
+        // Vérifications de base
+        if (chunkPrefab == null || worldMaterial == null)
+        {
+            Debug.LogError("Configuration manquante dans World!");
             return;
         }
 
-        // Trouver le joueur (suppose qu'il a le tag "Player")
+        // Trouver le joueur
         GameObject player = GameObject.FindGameObjectWithTag("Player");
-        if(player != null) {
+        if (player != null)
+        {
             playerTransform = player.transform;
-        } else {
-            Debug.LogWarning("Joueur non trouvé (Tag 'Player'). Chargement initial autour de (0,0).");
+            // Charger les chunks initiaux autour du joueur
+            UpdateChunksAroundPlayer(GetChunkCoordsFromWorldPos(playerTransform.position));
+        }
+        else
+        {
+            Debug.LogWarning("Joueur non trouvé (Tag 'Player')");
+        }
+    }
+
+    void Update()
+    {
+        if (playerTransform == null) return;
+
+        // Obtenir les coordonnées du chunk où se trouve le joueur
+        Vector2Int currentPlayerChunkCoord = GetChunkCoordsFromWorldPos(playerTransform.position);
+
+        // Si le joueur a changé de chunk, mettre à jour les chunks
+        if (currentPlayerChunkCoord != lastPlayerChunkCoord)
+        {
+            UpdateChunksAroundPlayer(currentPlayerChunkCoord);
+            lastPlayerChunkCoord = currentPlayerChunkCoord;
         }
 
-        // Commencer à charger les chunks initiaux autour du point de départ
-        // TODO: Implémenter un chargement/déchargement dynamique basé sur la position du joueur
-        GenerateInitialChunks();
-    }
-
-    void Update() {
-        // TODO: Mettre à jour les chunks (ex: appeler UpdateChunk pour ceux qui en ont besoin)
-        // Idéalement, faire ça de manière asynchrone ou répartie sur plusieurs frames
+        // Traiter les chunks à charger/décharger
         ProcessChunkUpdates();
-
-        // TODO: Vérifier la position du joueur et charger/décharger les chunks dynamiquement
-        // CheckAndLoadChunksAroundPlayer();
     }
 
+    void UpdateChunksAroundPlayer(Vector2Int playerChunkCoord)
+    {
+        chunksToLoad.Clear();
+        chunksToUnload.Clear();
 
-    void GenerateInitialChunks() {
-        // Exemple: Charger une zone fixe au démarrage
-        Vector2Int playerChunkPos = GetChunkCoordsFromWorldPos(playerTransform != null ? playerTransform.position : Vector3.zero);
+        // Déterminer quels chunks devraient être chargés
+        for (int x = -renderDistance; x <= renderDistance; x++)
+        {
+            for (int z = -renderDistance; z <= renderDistance; z++)
+            {
+                Vector2Int chunkCoord = new Vector2Int(playerChunkCoord.x + x, playerChunkCoord.y + z);
+                
+                // Si le chunk n'est pas déjà chargé, l'ajouter à la liste de chargement
+                if (!activeChunks.ContainsKey(chunkCoord))
+                {
+                    chunksToLoad.Add(chunkCoord);
+                }
+            }
+        }
 
-        for(int x = -renderDistance; x <= renderDistance; x++) {
-             for(int z = -renderDistance; z <= renderDistance; z++) {
-                 Vector2Int chunkCoord = new Vector2Int(playerChunkPos.x + x, playerChunkPos.y + z); // Utiliser y de Vector2Int pour z
-                 LoadChunk(chunkCoord);
-             }
+        // Identifier les chunks à décharger (ceux qui sont trop loin)
+        foreach (var chunk in activeChunks)
+        {
+            Vector2Int coord = chunk.Key;
+            if (Mathf.Abs(coord.x - playerChunkCoord.x) > renderDistance ||
+                Mathf.Abs(coord.y - playerChunkCoord.y) > renderDistance)
+            {
+                chunksToUnload.Add(coord);
+            }
+        }
+    }
+
+    void ProcessChunkUpdates()
+    {
+        // Décharger les chunks trop éloignés
+        foreach (var coord in chunksToUnload)
+        {
+            if (activeChunks.TryGetValue(coord, out Chunk chunk))
+            {
+                Destroy(chunk.gameObject);
+                activeChunks.Remove(coord);
+            }
+        }
+
+        // Charger les nouveaux chunks
+        foreach (var coord in chunksToLoad)
+        {
+            LoadChunk(coord);
+        }
+
+        // Mettre à jour les meshes des chunks actifs
+        foreach (var chunk in activeChunks.Values)
+        {
+            chunk.UpdateChunk();
         }
     }
 
@@ -95,13 +155,6 @@ public class World : MonoBehaviour
          }
     }
 
-     // Appelé par Update pour générer/mettre à jour les meshes des chunks marqués
-    void ProcessChunkUpdates() {
-        foreach(var chunkPair in activeChunks) {
-             chunkPair.Value.UpdateChunk(); // Demande au chunk de vérifier s'il doit reconstruire son mesh
-        }
-    }
-
     // --- Accès aux Voxels (méthodes helper) ---
 
     public Chunk GetChunk(Vector3Int chunkPosition) {
@@ -117,10 +170,12 @@ public class World : MonoBehaviour
         return chunk;
     }
 
-    public Vector2Int GetChunkCoordsFromWorldPos(Vector3 worldPos) {
-         int x = Mathf.FloorToInt(worldPos.x / Chunk.Width);
-         int z = Mathf.FloorToInt(worldPos.z / Chunk.Depth);
-         return new Vector2Int(x, z);
+    public Vector2Int GetChunkCoordsFromWorldPos(Vector3 worldPos)
+    {
+        // Convertir la position monde en coordonnées de chunk
+        int chunkX = Mathf.FloorToInt(worldPos.x / Chunk.Width);
+        int chunkZ = Mathf.FloorToInt(worldPos.z / Chunk.Depth);
+        return new Vector2Int(chunkX, chunkZ);
     }
 
     public Voxel GetVoxel(Vector3Int worldPos)

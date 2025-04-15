@@ -41,6 +41,12 @@ public class Chunk : MonoBehaviour
         // TODO: Remplir voxelData avec la génération procédurale initiale
         GenerateTerrain(); // Exemple simple
 
+        // Ajoutez des logs pour debug
+        Debug.Log($"Starting decoration for chunk at {position}");
+        TerrainDecoration decorator = new TerrainDecoration();
+        decorator.DecorateChunk(this);
+        Debug.Log("Chunk decoration completed");
+
         // Marquer pour la génération initiale du mesh
         needsMeshUpdate = true;
     }

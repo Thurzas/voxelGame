@@ -41,6 +41,12 @@ public class Chunk : MonoBehaviour
         // TODO: Remplir voxelData avec la génération procédurale initiale
         GenerateTerrain(); // Exemple simple
 
+        // Ajoutez des logs pour debug
+        Debug.Log($"Starting decoration for chunk at {position}");
+        TerrainDecoration decorator = new TerrainDecoration();
+        decorator.DecorateChunk(this);
+        Debug.Log("Chunk decoration completed");
+
         // Marquer pour la génération initiale du mesh
         needsMeshUpdate = true;
     }
@@ -122,38 +128,83 @@ public class Chunk : MonoBehaviour
         float[,] heightmap = Noise.GenerateHeightmap(Width, offset);
         NoiseSettings settings = Noise.CurrentSettings;
         
+        // --- Génération du terrain de base ---
         for (int x = 0; x < Width; x++)
         {
             for (int z = 0; z < Depth; z++)
             {
                 float heightValue = heightmap[x, z];
-                // Modification ici : le bruit (0-1) est d'abord centré autour de 0 (-0.5 à 0.5)
-                // puis multiplié par heightMultiplier et enfin ajouté à baseHeight
                 int groundHeight = Mathf.FloorToInt(settings.baseHeight + (heightValue - 0.5f) * settings.heightMultiplier);
-                
                 for (int y = 0; y < Height; y++)
                 {
                     if (y < groundHeight - 3)
-                    {
                         voxelData[x, y, z] = new Voxel(VoxelType.Stone);
-                    }
                     else if (y < groundHeight)
-                    {
                         voxelData[x, y, z] = new Voxel(VoxelType.Dirt);
-                    }
                     else if (y == groundHeight)
-                    {
                         voxelData[x, y, z] = new Voxel(VoxelType.Grass);
-                    }
                     else
-                    {
                         voxelData[x, y, z] = new Voxel(VoxelType.Air);
-                    }
                 }
             }
         }
-        
-        needsMeshUpdate = true;
+
+        // --- Génération déterministe des décorations (arbres) ---
+        int worldSeed = World.Instance.worldSeed;
+        for (int x = 0; x < Width; x++)
+        {
+            for (int z = 0; z < Depth; z++)
+            {
+                int worldX = chunkPosition.x * Width + x;
+                int worldZ = chunkPosition.z * Depth + z;
+                int hash = worldX * 73856093 ^ worldZ * 19349663 ^ worldSeed;
+                Random.InitState(hash);
+                if (Random.value < 0.05f) // 5% de chance de générer un arbre
+                {
+                    int groundY = GetSurfaceY(x, z);
+                    PlaceTree(worldX, groundY, worldZ);
+                }
+            }
+        }
+    }
+
+    // Retourne la hauteur du sol pour (x, z) local au chunk
+    int GetSurfaceY(int x, int z)
+    {
+        for (int y = Height - 1; y >= 0; y--)
+        {
+            if (voxelData[x, y, z].type != VoxelType.Air)
+                return y + 1;
+        }
+        return 1;
+    }
+
+    // Place un arbre déterministe, en écrivant uniquement dans le chunk courant
+    void PlaceTree(int worldX, int y, int worldZ)
+    {
+        int treeHeight = 5;
+        int leafRadius = 1;
+        for (int dy = 0; dy < treeHeight; dy++)
+        {
+            WriteVoxelIfInChunk(worldX, y + dy, worldZ, VoxelType.Wood);
+        }
+        for (int dx = -leafRadius; dx <= leafRadius; dx++)
+        for (int dz = -leafRadius; dz <= leafRadius; dz++)
+        for (int dy = -1; dy <= 1; dy++)
+        {
+            WriteVoxelIfInChunk(worldX + dx, y + treeHeight - 1 + dy, worldZ + dz, VoxelType.Leaves);
+        }
+    }
+
+    // N'écrit que si la position est dans le chunk courant
+    void WriteVoxelIfInChunk(int wx, int y, int wz, VoxelType type)
+    {
+        int localX = wx - chunkPosition.x * Width;
+        int localZ = wz - chunkPosition.z * Depth;
+        if (localX >= 0 && localX < Width && localZ >= 0 && localZ < Depth && y >= 0 && y < Height)
+        {
+            voxelData[localX, y, localZ] = new Voxel(type);
+        }
     }
 
     void CheckNeighborChunksForUpdate(int x, int y, int z)

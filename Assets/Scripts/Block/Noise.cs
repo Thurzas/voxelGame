@@ -56,6 +56,7 @@ public static class Noise
 
         // Configuration du shader
         int kernelIndex = heightmapShader.FindKernel("GenerateHeightmap");
+        heightmapShader.SetInt("worldSeed", World.Instance.worldSeed);
         heightmapShader.SetTexture(kernelIndex, "HeightmapResult", heightmapTexture);
         heightmapShader.SetFloat("scale", Scale);
         heightmapShader.SetVector("offset", offset);

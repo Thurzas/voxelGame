@@ -8,71 +8,60 @@ int octaves;
 float persistence;
 float lacunarity;
 uint mapSize;
+int worldSeed;
 
-// Hash function pour le bruit de gradient
-float2 hash22(float2 p)
+// Hash function pour le bruit de gradient, avec seed
+float2 hash22(float2 p, int seed)
 {
     float3 p3 = frac(float3(p.xyx) * float3(443.897, 441.423, 437.195));
-    p3 += dot(p3, p3.yzx + 19.19);
+    p3 += dot(p3, p3.yzx + 19.19) + seed * 0.0001;
     return frac((p3.xx + p3.yz) * p3.zy);
 }
 
-// Fonction de bruit de gradient 2D
-float gradientNoise(float2 p)
+// Fonction de bruit de gradient 2D, avec seed
+float gradientNoise(float2 p, int seed)
 {
     float2 i = floor(p);
     float2 f = frac(p);
-    
     // Corners
-    float2 g00 = hash22(i + float2(0, 0)) * 2.0 - 1.0;
-    float2 g10 = hash22(i + float2(1, 0)) * 2.0 - 1.0;
-    float2 g01 = hash22(i + float2(0, 1)) * 2.0 - 1.0;
-    float2 g11 = hash22(i + float2(1, 1)) * 2.0 - 1.0;
-    
-    // Quintic interpolation
+    float2 g00 = hash22(i + float2(0, 0), seed) * 2.0 - 1.0;
+    float2 g10 = hash22(i + float2(1, 0), seed) * 2.0 - 1.0;
+    float2 g01 = hash22(i + float2(0, 1), seed) * 2.0 - 1.0;
+    float2 g11 = hash22(i + float2(1, 1), seed) * 2.0 - 1.0;
     float2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
-    
-    // Dot products
     float n00 = dot(g00, f - float2(0, 0));
     float n10 = dot(g10, f - float2(1, 0));
     float n01 = dot(g01, f - float2(0, 1));
     float n11 = dot(g11, f - float2(1, 1));
-    
-    // Interpolation
     float nx0 = lerp(n00, n10, u.x);
     float nx1 = lerp(n01, n11, u.x);
     float nxy = lerp(nx0, nx1, u.y);
-    
-    return nxy * 0.5 + 0.5; // Normaliser entre 0 et 1
+    return nxy * 0.5 + 0.5;
 }
 
-// Fonction FBM
-float fbm(float2 p)
+// Fonction FBM avec seed
+float fbm(float2 p, int seed)
 {
     float value = 0.0;
     float amplitude = 1.0;
     float frequency = 1.0;
     float totalAmplitude = 0.0;
-    
     for(int i = 0; i < octaves; i++)
     {
-        value += amplitude * gradientNoise(p * frequency);
+        value += amplitude * gradientNoise(p * frequency, seed + i * 92821);
         totalAmplitude += amplitude;
         amplitude *= persistence;
         frequency *= lacunarity;
     }
-    
     return value / totalAmplitude;
 }
 
+// Kernel principal
 [numthreads(8,8,1)]
 void GenerateHeightmap(uint3 id : SV_DispatchThreadID)
 {
     if(id.x >= mapSize || id.y >= mapSize) return;
-    
-    float2 pos = float2(id.xy) / float(mapSize);
-    float2 scaledPos = (pos + offset) * scale;
-    
-    float height = fbm(scaledPos);
-    HeightmapResult[id.xy] = height;
+    float2 pos = float2(id.x, id.y) / scale + offset;
+    float h = fbm(pos, worldSeed);
+    HeightmapResult[id.xy] = h;
 }

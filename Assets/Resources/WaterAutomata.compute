@@ -1,0 +1,24 @@
+// WaterAutomata.compute
+#pragma kernel SimulateWater
+
+RWTexture3D<float> WaterStateOut; // Texture de sortie (état de l'eau après simulation)
+Texture3D<float> WaterStateIn;    // Texture d'entrée (état de l'eau avant simulation)
+int3 chunkSize;
+
+// Règles simples : gravité (l'eau tombe si possible)
+[numthreads(8,8,8)]
+void SimulateWater(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= chunkSize.x || id.y >= chunkSize.y || id.z >= chunkSize.z) return;
+
+    float current = WaterStateIn[id];
+    float below = id.y > 0 ? WaterStateIn[uint3(id.x, id.y - 1, id.z)] : 0;
+    float newValue = current;
+
+    // Gravité : si l'eau peut descendre, elle le fait
+    if (current > 0.1 && below < 0.9)
+        newValue -= 0.1; // Perd un peu d'eau (à ajuster selon le réalisme souhaité)
+    // Diffusion latérale possible à ajouter ici
+
+    WaterStateOut[id] = newValue;
+}

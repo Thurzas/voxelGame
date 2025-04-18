@@ -22,6 +22,13 @@ public class Chunk : MonoBehaviour
 
     // --- État ---
     private bool needsMeshUpdate = false;
+
+    // --- Eau ---
+
+    RenderTexture waterStateA;
+    RenderTexture waterStateB;
+    bool useAasInput = true;
+
     // pourrait avoir d'autres états: isLoaded, isGenerated, etc.
 
     void Awake()
@@ -38,7 +45,6 @@ public class Chunk : MonoBehaviour
         this.name = $"Chunk ({position.x}, {position.z})";
         this.meshRenderer.material = material; // Assigner le matériel (atlas de textures)
 
-        // TODO: Remplir voxelData avec la génération procédurale initiale
         GenerateTerrain(); // Exemple simple
 
         // Ajoutez des logs pour debug
@@ -46,6 +52,9 @@ public class Chunk : MonoBehaviour
         TerrainDecoration decorator = new TerrainDecoration();
         decorator.DecorateChunk(this);
         Debug.Log("Chunk decoration completed");
+
+        // Initialisation de l'état de l'eau APRÈS la décoration
+        InitializeWaterStateTexture();
 
         // Marquer pour la génération initiale du mesh
         needsMeshUpdate = true;
@@ -119,13 +128,86 @@ public class Chunk : MonoBehaviour
         }
     }
 
+    // --- Eau ---
+    // Initialisation des textures de l'eau
+    void InitializeWaterStateTexture()
+    {
+        waterStateA = new RenderTexture(Width, Height, 0, RenderTextureFormat.RFloat);
+        waterStateA.dimension = UnityEngine.Rendering.TextureDimension.Tex3D;
+        waterStateA.enableRandomWrite = true;
+        waterStateA.volumeDepth = Depth;
+        waterStateA.Create();
+
+        waterStateB = new RenderTexture(Width, Height, 0, RenderTextureFormat.RFloat);
+        waterStateB.dimension = UnityEngine.Rendering.TextureDimension.Tex3D;
+        waterStateB.enableRandomWrite = true;
+        waterStateB.volumeDepth = Depth;
+        waterStateB.Create();
+
+        // Remplissage initial de l'état de l'eau selon voxelData
+        Texture3D temp = new Texture3D(Width, Height, Depth, TextureFormat.RFloat, false);
+        Color[] colors = new Color[Width * Height * Depth];
+        for (int x = 0; x < Width; x++)
+            for (int y = 0; y < Height; y++)
+                for (int z = 0; z < Depth; z++)
+                    colors[x + y * Width + z * Width * Height] =
+                        voxelData[x, y, z].type == VoxelType.Water ? new Color(1, 0, 0, 0) : new Color(0, 0, 0, 0);
+        temp.SetPixels(colors);
+        temp.Apply();
+        Graphics.CopyTexture(temp, 0, 0, waterStateA, 0, 0);
+        Object.Destroy(temp);
+    }
+
+    // Simulation de l'eau (génération à chaque tick)
+ 
+    void SimulateWaterStep()
+    {
+        // Ne simule que si les textures sont bien initialisées
+        if (waterStateA == null || waterStateB == null)
+            return;
+
+        var compute = (ComputeShader)Resources.Load("WaterAutomata");
+        int kernel = compute.FindKernel("SimulateWater");
+
+        // Définir la taille du chunk
+        compute.SetInts("chunkSize", Width, Height, Depth);
+
+        // Ping-pong des textures
+        if (useAasInput)
+        {
+            compute.SetTexture(kernel, "WaterStateIn", waterStateA);
+            compute.SetTexture(kernel, "WaterStateOut", waterStateB);
+        }
+        else
+        {
+            compute.SetTexture(kernel, "WaterStateIn", waterStateB);
+            compute.SetTexture(kernel, "WaterStateOut", waterStateA);
+        }
+        useAasInput = !useAasInput;
+
+        int threadGroupsX = Mathf.CeilToInt(Width / 8f);
+        int threadGroupsY = Mathf.CeilToInt(Height / 8f);
+        int threadGroupsZ = Mathf.CeilToInt(Depth / 8f);
+
+        compute.Dispatch(kernel, threadGroupsX, threadGroupsY, threadGroupsZ);
+    }
+
+    void Update()
+    {
+        // Simulation de l'eau à chaque frame
+        SimulateWaterStep();
+    }
 
     // --- Méthodes de génération (exemples) ---
 
     void GenerateTerrain()
     {
-        Vector2 offset = new Vector2(chunkPosition.x, chunkPosition.z);
-        float[,] heightmap = Noise.GenerateHeightmap(Width, offset);
+        // Correction : offset mondial pour continuité parfaite du bruit
+        Vector2 worldOffset = new Vector2(
+            chunkPosition.x * Width,
+            chunkPosition.z * Depth
+        );
+        float[,] heightmap = Noise.GenerateHeightmap(Width, worldOffset);
         NoiseSettings settings = Noise.CurrentSettings;
         int seaLevel = 20;
         
@@ -134,7 +216,10 @@ public class Chunk : MonoBehaviour
         {
             for (int z = 0; z < Depth; z++)
             {
+                // Correction : coordonnées mondiales pour chaque voxel
                 float heightValue = heightmap[x, z];
+                int worldX = chunkPosition.x * Width + x;
+                int worldZ = chunkPosition.z * Depth + z;
                 int groundHeight = Mathf.FloorToInt(settings.baseHeight + (heightValue - 0.5f) * settings.heightMultiplier);
                 for (int y = 0; y < Height; y++)
                 {
@@ -168,13 +253,18 @@ public class Chunk : MonoBehaviour
                 int hash = worldX * 73856093 ^ worldZ * 19349663 ^ worldSeed;
                 Random.InitState(hash);
                 int surfaceY = GetSurfaceY(x, z);
-                // On ne place d'arbre que si la surface est au-dessus de l'eau
-                if (surfaceY > seaLevel && Random.value < 0.05f)
+                // On ne place d'arbre que si la surface est au-dessus de l'eau, et sur de la terre
+                if (
+                    surfaceY > seaLevel &&
+                    voxelData[x, surfaceY, z].type == VoxelType.Dirt &&
+                    Random.value < 0.05f
+                )
                 {
                     PlaceTree(worldX, surfaceY, worldZ);
                 }
             }
         }
+        // Suppression de l'appel à InitializeWaterStateTexture ici (déplacé dans Initialize)
     }
 
     // Retourne la hauteur du sol pour (x, z) local au chunk

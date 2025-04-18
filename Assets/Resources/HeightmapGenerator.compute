@@ -39,7 +39,7 @@ float gradientNoise(float2 p, int seed)
     return nxy * 0.5 + 0.5;
 }
 
-// Fonction FBM avec seed
+// Fonction FBM avec seedz
 float fbm(float2 p, int seed)
 {
     float value = 0.0;
@@ -61,7 +61,10 @@ float fbm(float2 p, int seed)
 void GenerateHeightmap(uint3 id : SV_DispatchThreadID)
 {
     if(id.x >= mapSize || id.y >= mapSize) return;
-    float2 pos = float2(id.x, id.y) / scale + offset;
-    float h = fbm(pos, worldSeed);
-    HeightmapResult[id.xy] = h;
+    
+    float2 pos = float2(id.xy) / float(mapSize);
+    float2 scaledPos = (pos + offset) * scale;
+    
+    float height = fbm(scaledPos, worldSeed);
+    HeightmapResult[id.xy] = height;
 }

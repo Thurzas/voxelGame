@@ -15,7 +15,7 @@ public static class Noise
     }
 
     // Paramètres FBM
-    public static float Scale { get; set; } = 50f;
+    public static float Scale { get; set; } = 15f;
     public static int Octaves { get; set; } = 6;
     public static float Persistence { get; set; } = 0.5f;
     public static float Lacunarity { get; set; } = 2.0f;

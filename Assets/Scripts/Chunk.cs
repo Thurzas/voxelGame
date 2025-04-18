@@ -127,8 +127,9 @@ public class Chunk : MonoBehaviour
         Vector2 offset = new Vector2(chunkPosition.x, chunkPosition.z);
         float[,] heightmap = Noise.GenerateHeightmap(Width, offset);
         NoiseSettings settings = Noise.CurrentSettings;
+        int seaLevel = 20;
         
-        // --- Génération du terrain de base ---
+        // --- Génération du terrain de base avec plages et eau ---
         for (int x = 0; x < Width; x++)
         {
             for (int z = 0; z < Depth; z++)
@@ -142,7 +143,14 @@ public class Chunk : MonoBehaviour
                     else if (y < groundHeight)
                         voxelData[x, y, z] = new Voxel(VoxelType.Dirt);
                     else if (y == groundHeight)
-                        voxelData[x, y, z] = new Voxel(VoxelType.Grass);
+                    {
+                        if (groundHeight <= seaLevel + 2)
+                            voxelData[x, y, z] = new Voxel(VoxelType.Sand); // Plage
+                        else
+                            voxelData[x, y, z] = new Voxel(VoxelType.Grass);
+                    }
+                    else if (y > groundHeight && y <= seaLevel)
+                        voxelData[x, y, z] = new Voxel(VoxelType.Water); // Eau jusqu'au niveau de la mer
                     else
                         voxelData[x, y, z] = new Voxel(VoxelType.Air);
                 }
@@ -159,10 +167,11 @@ public class Chunk : MonoBehaviour
                 int worldZ = chunkPosition.z * Depth + z;
                 int hash = worldX * 73856093 ^ worldZ * 19349663 ^ worldSeed;
                 Random.InitState(hash);
-                if (Random.value < 0.05f) // 5% de chance de générer un arbre
+                int surfaceY = GetSurfaceY(x, z);
+                // On ne place d'arbre que si la surface est au-dessus de l'eau
+                if (surfaceY > seaLevel && Random.value < 0.05f)
                 {
-                    int groundY = GetSurfaceY(x, z);
-                    PlaceTree(worldX, groundY, worldZ);
+                    PlaceTree(worldX, surfaceY, worldZ);
                 }
             }
         }

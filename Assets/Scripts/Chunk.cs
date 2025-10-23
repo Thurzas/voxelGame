@@ -242,6 +242,15 @@ public class Chunk : MonoBehaviour
             }
         }
 
+        // Force la dernière couche du chunk à être de la pierre (Stone)
+        for (int x = 0; x < Width; x++)
+        {
+            for (int z = 0; z < Depth; z++)
+            {
+                voxelData[x, 0, z] = new Voxel(VoxelType.Stone);
+            }
+        }
+
         // --- Génération déterministe des décorations (arbres) ---
         int worldSeed = World.Instance.worldSeed;
         for (int x = 0; x < Width; x++)
@@ -349,52 +358,89 @@ public class Chunk : MonoBehaviour
      void GenerateMeshCPU_Naive()
     {
         //Debug.Log($"Generating mesh for chunk {chunkPosition} using CPU (Naive)");
+        // --- MESH TERRAIN ---
         System.Collections.Generic.List<Vector3> vertices = new System.Collections.Generic.List<Vector3>();
         System.Collections.Generic.List<int> triangles = new System.Collections.Generic.List<int>();
         System.Collections.Generic.List<Vector2> uvs = new System.Collections.Generic.List<Vector2>();
         int vertexIndex = 0;
 
+        // --- MESH EAU ---
+        System.Collections.Generic.List<Vector3> waterVertices = new System.Collections.Generic.List<Vector3>();
+        System.Collections.Generic.List<int> waterTriangles = new System.Collections.Generic.List<int>();
+        System.Collections.Generic.List<Vector2> waterUVs = new System.Collections.Generic.List<Vector2>();
+        int waterVertexIndex = 0;
+
         for (int x = 0; x < Width; x++) {
             for (int y = 0; y < Height; y++) {
                 for (int z = 0; z < Depth; z++) {
-                    if (voxelData[x, y, z].IsSolid) {
+                    var voxel = voxelData[x, y, z];
+                    if (voxel.IsSolid && voxel.type != VoxelType.Water) {
                         Vector3 pos = new Vector3(x, y, z);
-                        // Vérifier chaque face
-                        // Face +X (Droite)
-                        if (!IsVoxelSolid(x + 1, y, z)) vertexIndex = AddFace(vertices, triangles, uvs, vertexIndex, pos, Vector3.right, VoxelTypeToTexture(voxelData[x, y, z].type, Vector3.right));
-                        // Face -X (Gauche)
-                        if (!IsVoxelSolid(x - 1, y, z)) vertexIndex = AddFace(vertices, triangles, uvs, vertexIndex, pos, Vector3.left, VoxelTypeToTexture(voxelData[x, y, z].type, Vector3.left));
-                        // Face +Y (Haut)
-                        if (!IsVoxelSolid(x, y + 1, z)) vertexIndex = AddFace(vertices, triangles, uvs, vertexIndex, pos, Vector3.up, VoxelTypeToTexture(voxelData[x, y, z].type, Vector3.up));
-                        // Face -Y (Bas)
-                        if (!IsVoxelSolid(x, y - 1, z)) vertexIndex = AddFace(vertices, triangles, uvs, vertexIndex, pos, Vector3.down, VoxelTypeToTexture(voxelData[x, y, z].type, Vector3.down));
-                        // Face +Z (Avant)
-                        if (!IsVoxelSolid(x, y, z + 1)) vertexIndex = AddFace(vertices, triangles, uvs, vertexIndex, pos, Vector3.forward, VoxelTypeToTexture(voxelData[x, y, z].type, Vector3.forward));
-                        // Face -Z (Arrière)
-                        if (!IsVoxelSolid(x, y, z - 1)) vertexIndex = AddFace(vertices, triangles, uvs, vertexIndex, pos, Vector3.back, VoxelTypeToTexture(voxelData[x, y, z].type, Vector3.back));
+                        if (!IsVoxelSolidOnly(x + 1, y, z)) vertexIndex = AddFace(vertices, triangles, uvs, vertexIndex, pos, Vector3.right, VoxelTypeToTexture(voxel.type, Vector3.right));
+                        if (!IsVoxelSolidOnly(x - 1, y, z)) vertexIndex = AddFace(vertices, triangles, uvs, vertexIndex, pos, Vector3.left, VoxelTypeToTexture(voxel.type, Vector3.left));
+                        if (!IsVoxelSolidOnly(x, y + 1, z)) vertexIndex = AddFace(vertices, triangles, uvs, vertexIndex, pos, Vector3.up, VoxelTypeToTexture(voxel.type, Vector3.up));
+                        if (!IsVoxelSolidOnly(x, y - 1, z)) vertexIndex = AddFace(vertices, triangles, uvs, vertexIndex, pos, Vector3.down, VoxelTypeToTexture(voxel.type, Vector3.down));
+                        if (!IsVoxelSolidOnly(x, y, z + 1)) vertexIndex = AddFace(vertices, triangles, uvs, vertexIndex, pos, Vector3.forward, VoxelTypeToTexture(voxel.type, Vector3.forward));
+                        if (!IsVoxelSolidOnly(x, y, z - 1)) vertexIndex = AddFace(vertices, triangles, uvs, vertexIndex, pos, Vector3.back, VoxelTypeToTexture(voxel.type, Vector3.back));
+                    }
+                    // Eau : mesh séparé
+                    else if (voxel.type == VoxelType.Water) {
+                        Vector3 pos = new Vector3(x, y, z);
+                        if (!IsVoxelSolidOrWater(x + 1, y, z)) waterVertexIndex = AddFace(waterVertices, waterTriangles, waterUVs, waterVertexIndex, pos, Vector3.right, VoxelTypeToTexture(voxel.type, Vector3.right));
+                        if (!IsVoxelSolidOrWater(x - 1, y, z)) waterVertexIndex = AddFace(waterVertices, waterTriangles, waterUVs, waterVertexIndex, pos, Vector3.left, VoxelTypeToTexture(voxel.type, Vector3.left));
+                        if (!IsVoxelSolidOrWater(x, y + 1, z)) waterVertexIndex = AddFace(waterVertices, waterTriangles, waterUVs, waterVertexIndex, pos, Vector3.up, VoxelTypeToTexture(voxel.type, Vector3.up));
+                        if (!IsVoxelSolidOrWater(x, y - 1, z)) waterVertexIndex = AddFace(waterVertices, waterTriangles, waterUVs, waterVertexIndex, pos, Vector3.down, VoxelTypeToTexture(voxel.type, Vector3.down));
+                        if (!IsVoxelSolidOrWater(x, y, z + 1)) waterVertexIndex = AddFace(waterVertices, waterTriangles, waterUVs, waterVertexIndex, pos, Vector3.forward, VoxelTypeToTexture(voxel.type, Vector3.forward));
+                        if (!IsVoxelSolidOrWater(x, y, z - 1)) waterVertexIndex = AddFace(waterVertices, waterTriangles, waterUVs, waterVertexIndex, pos, Vector3.back, VoxelTypeToTexture(voxel.type, Vector3.back));
                     }
                 }
             }
         }
 
+        // --- MESH TERRAIN ---
         if (generatedMesh == null) {
              generatedMesh = new Mesh();
-             generatedMesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32; // Pour les grands meshes
+             generatedMesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
         } else {
              generatedMesh.Clear();
         }
-
         generatedMesh.vertices = vertices.ToArray();
         generatedMesh.triangles = triangles.ToArray();
         generatedMesh.uv = uvs.ToArray();
-        generatedMesh.RecalculateNormals(); // Important pour l'éclairage
-        generatedMesh.Optimize(); // Optimiser la structure du mesh
-
+        generatedMesh.RecalculateNormals();
+        generatedMesh.Optimize();
         meshFilter.mesh = generatedMesh;
-        meshCollider.sharedMesh = generatedMesh; // Mettre à jour le collider physique
+        meshCollider.sharedMesh = generatedMesh;
+
+        // --- MESH EAU ---
+        if (waterVertices.Count > 0) {
+            Mesh waterMesh = new Mesh();
+            waterMesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
+            waterMesh.vertices = waterVertices.ToArray();
+            waterMesh.triangles = waterTriangles.ToArray();
+            waterMesh.uv = waterUVs.ToArray();
+            waterMesh.RecalculateNormals();
+            waterMesh.Optimize();
+            GameObject waterObj = transform.Find("ChunkWater")?.gameObject;
+            if (waterObj == null) {
+                waterObj = new GameObject("ChunkWater");
+                waterObj.transform.parent = this.transform;
+                waterObj.transform.localPosition = Vector3.zero;
+                var mf = waterObj.AddComponent<MeshFilter>();
+                var mr = waterObj.AddComponent<MeshRenderer>();
+                // À assigner dans l’inspecteur ou par code
+                mr.material = World.Instance.waterMaterial;
+            }
+            var meshFilterWater = waterObj.GetComponent<MeshFilter>();
+            meshFilterWater.mesh = waterMesh;
+            // Pas de collider pour l’eau
+        } else {
+            var waterObj = transform.Find("ChunkWater");
+            if (waterObj != null) GameObject.Destroy(waterObj.gameObject);
+        }
     }
 
-     // Helper pour vérifier si un voxel est solide (gère les limites du chunk)
+    // Helper pour vérifier si un voxel est solide (gère les limites du chunk)
     bool IsVoxelSolid(int x, int y, int z) {
         // Vérifier d'abord si c'est DANS ce chunk
         if (IsVoxelInChunk(x, y, z)) {
@@ -405,6 +451,31 @@ public class Chunk : MonoBehaviour
                  return World.Instance.IsVoxelSolid(GetWorldPosition(x, y, z));
              }
              return false; // Par défaut, considérer hors monde comme non solide (ou solide, selon la logique voulue aux bords du monde chargé)
+        }
+    }
+
+    bool IsVoxelSolidOrWater(int x, int y, int z) {
+        // Vérifier d'abord si c'est DANS ce chunk
+        if (IsVoxelInChunk(x, y, z)) {
+             return voxelData[x, y, z].IsSolid || voxelData[x, y, z].type == VoxelType.Water;
+        } else {
+             // Si c'est hors limites, demander au monde (potentiellement un chunk voisin)
+             if (World.Instance != null) {
+                 return World.Instance.IsVoxelSolid(GetWorldPosition(x, y, z)) || World.Instance.GetVoxel(GetWorldPosition(x, y, z)).type == VoxelType.Water;
+             }
+             return false; // Par défaut, considérer hors monde comme non solide (ou solide, selon la logique voulue aux bords du monde chargé)
+        }
+    }
+
+    bool IsVoxelSolidOnly(int x, int y, int z) {
+        if (IsVoxelInChunk(x, y, z)) {
+            return voxelData[x, y, z].IsSolid && voxelData[x, y, z].type != VoxelType.Water;
+        } else {
+            if (World.Instance != null) {
+                var voxel = World.Instance.GetVoxel(GetWorldPosition(x, y, z));
+                return voxel.IsSolid && voxel.type != VoxelType.Water;
+            }
+            return false;
         }
     }
 

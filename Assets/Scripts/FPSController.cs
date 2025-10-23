@@ -15,6 +15,11 @@ public class FPSController : MonoBehaviour
     [SerializeField] private float maxLookAngle = 90f;
     [SerializeField] private bool invertY = false;
 
+    [Header("Swim Settings")]
+    [SerializeField] private float swimSpeed = 3f;
+    [SerializeField] private float swimUpSpeed = 3f;
+    [SerializeField] private float swimGravity = -2f;
+
     [Header("References")]
     [SerializeField] private Transform cameraTransform;
 
@@ -63,30 +68,46 @@ public class FPSController : MonoBehaviour
         Vector3 moveDirection = transform.right * moveInput.x + transform.forward * moveInput.y;
         float currentSpeed = isRunning ? runSpeed : walkSpeed;
 
-        // Apply movement
-        currentMovement.x = moveDirection.x * currentSpeed;
-        currentMovement.z = moveDirection.z * currentSpeed;
+        // --- Détection de l'eau ---
+        bool isInWater = World.Instance != null && World.Instance.GetVoxel(Vector3Int.FloorToInt(transform.position)).type == VoxelType.Water;
 
-        // Apply gravity
-        if (characterController.isGrounded)
+        if (isInWater)
         {
-            velocity.y = -2f; // Small downward force when grounded
+            // Mouvement de nage
+            currentMovement.x = moveDirection.x * swimSpeed;
+            currentMovement.z = moveDirection.z * swimSpeed;
 
-            // Handle jumping
-            if (jumpPressed)
-            {
-                velocity.y = jumpForce;
-                jumpPressed = false;
-            }
+            // Flottement et nage verticale
+            if (Input.GetKey(KeyCode.Space))
+                velocity.y = swimUpSpeed; // Monter
+            else if (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.C))
+                velocity.y = -swimUpSpeed; // Descendre
+            else
+                velocity.y = swimGravity; // Flottement léger
         }
         else
         {
-            velocity.y += gravity * Time.deltaTime;
+            // Mouvement normal
+            currentMovement.x = moveDirection.x * currentSpeed;
+            currentMovement.z = moveDirection.z * currentSpeed;
+
+            // Gravité
+            if (characterController.isGrounded)
+            {
+                velocity.y = -2f;
+                if (jumpPressed)
+                {
+                    velocity.y = jumpForce;
+                    jumpPressed = false;
+                }
+            }
+            else
+            {
+                velocity.y += gravity * Time.deltaTime;
+            }
         }
 
         currentMovement.y = velocity.y;
-
-        // Move the character
         characterController.Move(currentMovement * Time.deltaTime);
     }
 

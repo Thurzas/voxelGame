@@ -15,9 +15,9 @@ C'est tout ! Le reste est en développement 😊
 ## 🗺️ Roadmap
 
 ### Phase 1 : Système de Monde (En cours)
-- [ ] Génération procédurale de terrain par chunks
+- ✅ Génération procédurale de terrain par chunks
+- ✅ Gestion du chargement/déchargement des chunks
 - [ ] Système de biomes
-- [ ] Gestion du chargement/déchargement des chunks
 - [ ] Système de sauvegarde des modifications
 
 ### Phase 2 : Physique et Interactions

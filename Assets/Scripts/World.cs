@@ -9,6 +9,7 @@ public class World : MonoBehaviour
 
     // --- Configuration ---
     public Material worldMaterial; // Le matériel avec l'atlas de texture pour tous les chunks
+    public Material waterMaterial; // Le material pour l'eau
     public GameObject chunkPrefab; // Le prefab du GameObject Chunk (avec le script Chunk attaché)
     public int renderDistance = 8; // Nombre de chunks à charger/afficher autour du joueur (en rayon)
     public int worldSeed = 1337;

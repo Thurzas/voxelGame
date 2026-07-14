@@ -111,7 +111,6 @@ public class PlayerInteraction : MonoBehaviour
             Vector3 pointInBlock = hit.point - hit.normal * 0.01f;
             Vector3Int blockPos = Vector3Int.FloorToInt(pointInBlock);
 
-            Debug.Log($"Trying to break block at {blockPos}");
             World.Instance?.SetVoxel(blockPos, VoxelType.Air); // Demander au monde de supprimer le bloc
         }
     }
@@ -137,13 +136,10 @@ public class PlayerInteraction : MonoBehaviour
             // Vérifier si la zone de placement chevauche le collider du joueur
             if (playerCollider != null && placeBounds.Intersects(playerCollider.bounds))
             {
-                 Debug.Log("Cannot place block inside player.");
                  return; // Ne pas placer le bloc si le joueur est à l'intérieur
             }
             //---------------------------------------------------------------------
 
-
-            Debug.Log($"Trying to place block at {placePos}");
             World.Instance?.SetVoxel(placePos, selectedBlockType); // Demander au monde de placer le bloc
         }
     }
@@ -162,21 +158,12 @@ public class PlayerInteraction : MonoBehaviour
             
             if (targetChunk == null)
             {
-                Debug.Log("Tree placement failed: No chunk found at target location");
                 return;
             }
 
-            var blockBelow = targetChunk.GetVoxel(placePos.x, placePos.y - 1, placePos.z);
-            Debug.Log($"Block below tree position: {blockBelow.type}");
-
             if (TreeGenerator.CanGenerateTree(placePos, targetChunk))
             {
-                Debug.Log($"Successfully generating tree at position: {placePos}");
                 TreeGenerator.GenerateTree(placePos, targetChunk);
-            }
-            else
-            {
-                Debug.Log($"Cannot generate tree at {placePos} - Make sure there's grass below and enough space above");
             }
         }
     }

@@ -20,8 +20,6 @@ public class TerrainDecoration
     {
         int chunkArea = Chunk.Width * Chunk.Depth;
         int treesToPlace = Mathf.FloorToInt(chunkArea * TREES_PER_CHUNK_DENSITY);
-        
-        Debug.Log($"Attempting to place {treesToPlace} trees in chunk");
 
         for (int i = 0; i < treesToPlace; i++)
         {
@@ -33,24 +31,19 @@ public class TerrainDecoration
                 var voxel = chunk.GetVoxel(localX, y, localZ);
                 if (voxel.type == VoxelType.Grass)
                 {
-                    Debug.Log($"Found grass at local({localX}, {y}, {localZ})");
-
                     // Génération de l'arbre en utilisant les coordonnées locales
                     int treeBaseY = y + 1;
-                    
+
                     // Tronc
                     int height = UnityEngine.Random.Range(MIN_HEIGHT, MAX_HEIGHT + 1);
                     for (int treeY = 0; treeY < height; treeY++)
                     {
                         chunk.SetVoxel(localX, treeBaseY + treeY, localZ, VoxelType.Wood);
-                        Debug.Log($"Placed trunk block at local({localX}, {treeBaseY + treeY}, {localZ})");
                     }
 
                     // Couronne de feuilles
                     int crownRadius = UnityEngine.Random.Range(MIN_CROWN_RADIUS, MAX_CROWN_RADIUS + 1);
                     int crownBaseHeight = treeBaseY + height - 2;
-
-                    Debug.Log($"Starting leaves placement at height {crownBaseHeight} with radius {crownRadius}");
 
                     for (int leafY = 0; leafY < 3; leafY++)
                     {
@@ -76,23 +69,9 @@ public class TerrainDecoration
                         }
                     }
 
-                    Debug.Log($"Completed tree generation at local({localX}, {treeBaseY}, {localZ})");
                     break;
                 }
             }
         }
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-

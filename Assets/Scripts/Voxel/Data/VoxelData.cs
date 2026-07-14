@@ -26,7 +26,7 @@ public enum VoxelType : ushort // ushort permet jusqu'à 65535 types de blocs
 
 // Option 2: Une struct pour plus de flexibilité future (lumière, état, etc.)
 [Serializable] // Utile si on veut sauvegarder/sérialiser les chunks
-public struct Voxel
+public struct Voxel : IEquatable<Voxel>
 {
     public VoxelType type;
     // public byte lightLevel; // Exemple: pour la gestion de la lumière
@@ -45,6 +45,13 @@ public struct Voxel
     {
         get { return type != VoxelType.Air; } // Pourrait être plus complexe (eau, feuilles, etc.)
     }
+
+    // IEquatable pur (pas de reflection) : nécessaire pour VoxelBrick.TryCompact et
+    // pour toute utilisation future dans des jobs Burst (Voxel comme clé/valeur de
+    // NativeContainer).
+    public bool Equals(Voxel other) => type == other.type;
+    public override bool Equals(object obj) => obj is Voxel other && Equals(other);
+    public override int GetHashCode() => (int)type;
 }
 
 // Dans le chunk, on aurait un tableau de Voxel: Voxel[,,] data;

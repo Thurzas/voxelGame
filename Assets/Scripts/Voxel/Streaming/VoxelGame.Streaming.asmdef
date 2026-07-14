@@ -1,0 +1,20 @@
+{
+    "name": "VoxelGame.Streaming",
+    "rootNamespace": "VoxelGame.Streaming",
+    "references": [
+        "VoxelGame.Data",
+        "Unity.Entities",
+        "Unity.Collections",
+        "Unity.Mathematics",
+        "Unity.Burst"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

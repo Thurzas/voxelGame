@@ -1,4 +1,7 @@
+using System;
+using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 public static class Noise
 {
@@ -44,17 +47,18 @@ public static class Noise
         }
     }
 
-    public static float[,] GenerateHeightmap(int size, Vector2 offset)
+    // Configure les paramètres du compute shader et dispatch. Retourne false si le
+    // shader/la texture ne sont pas disponibles (déjà loggé dans ce cas).
+    private static bool PrepareAndDispatch(int size, Vector2 offset)
     {
         Initialize(size);
 
         if (heightmapShader == null || heightmapTexture == null)
         {
             Debug.LogError("Heightmap generation failed - shader or texture not initialized!");
-            return new float[size, size];
+            return false;
         }
 
-        // Configuration du shader
         int kernelIndex = heightmapShader.FindKernel("GenerateHeightmap");
         heightmapShader.SetInt("worldSeed", World.Instance.worldSeed);
         heightmapShader.SetTexture(kernelIndex, "HeightmapResult", heightmapTexture);
@@ -65,12 +69,23 @@ public static class Noise
         heightmapShader.SetFloat("lacunarity", Lacunarity);
         heightmapShader.SetInt("mapSize", size);
 
-        // Dispatch
         int threadGroups = Mathf.CeilToInt(size / 8.0f);
         heightmapShader.Dispatch(kernelIndex, threadGroups, threadGroups, 1);
+        return true;
+    }
 
-        // Lecture des résultats
+    // Génération synchrone : réservée à l'aperçu de l'éditeur (NoiseSettingsEditor), où un
+    // stall CPU/GPU ponctuel est acceptable (outil, pas gameplay). Le chemin gameplay
+    // utilise RequestHeightmapAsync ci-dessous (roadmap phase 3).
+    public static float[,] GenerateHeightmap(int size, Vector2 offset)
+    {
         float[,] heightmap = new float[size, size];
+
+        if (!PrepareAndDispatch(size, offset))
+        {
+            return heightmap;
+        }
+
         RenderTexture.active = heightmapTexture;
         Texture2D temp = new Texture2D(size, size, TextureFormat.RFloat, false);
         temp.ReadPixels(new Rect(0, 0, size, size), 0, 0);
@@ -84,8 +99,84 @@ public static class Noise
             }
         }
 
-        Object.DestroyImmediate(temp);
+        UnityEngine.Object.DestroyImmediate(temp);
         return heightmap;
+    }
+
+    // --- Génération asynchrone (gameplay, roadmap phase 3) ---
+    // heightmapTexture est une ressource GPU partagée entre toutes les requêtes : on ne
+    // dispatch une nouvelle requête dedans qu'une fois le readback de la précédente
+    // terminé, d'où la file FIFO traitée une requête à la fois. Élimine le stall
+    // CPU/GPU de ReadPixels (le thread principal n'attend jamais le GPU).
+    private readonly struct PendingRequest
+    {
+        public readonly int Size;
+        public readonly Vector2 Offset;
+        public readonly Action<float[,]> OnComplete;
+
+        public PendingRequest(int size, Vector2 offset, Action<float[,]> onComplete)
+        {
+            Size = size;
+            Offset = offset;
+            OnComplete = onComplete;
+        }
+    }
+
+    private static readonly Queue<PendingRequest> pendingRequests = new Queue<PendingRequest>();
+    private static bool isProcessingRequest;
+
+    public static void RequestHeightmapAsync(int size, Vector2 offset, Action<float[,]> onComplete)
+    {
+        pendingRequests.Enqueue(new PendingRequest(size, offset, onComplete));
+        TryDispatchNext();
+    }
+
+    private static void TryDispatchNext()
+    {
+        if (isProcessingRequest || pendingRequests.Count == 0)
+        {
+            return;
+        }
+
+        PendingRequest next = pendingRequests.Peek();
+
+        if (!PrepareAndDispatch(next.Size, next.Offset))
+        {
+            pendingRequests.Dequeue();
+            next.OnComplete?.Invoke(new float[next.Size, next.Size]);
+            TryDispatchNext();
+            return;
+        }
+
+        isProcessingRequest = true;
+        int size = next.Size;
+        AsyncGPUReadback.Request(heightmapTexture, 0, request => OnReadbackComplete(request, size));
+    }
+
+    private static void OnReadbackComplete(AsyncGPUReadbackRequest request, int size)
+    {
+        PendingRequest completed = pendingRequests.Dequeue();
+        isProcessingRequest = false;
+
+        float[,] heightmap = new float[size, size];
+        if (request.hasError)
+        {
+            Debug.LogError("Heightmap AsyncGPUReadback a échoué.");
+        }
+        else
+        {
+            var data = request.GetData<float>();
+            for (int y = 0; y < size; y++)
+            {
+                for (int x = 0; x < size; x++)
+                {
+                    heightmap[x, y] = data[(y * size) + x];
+                }
+            }
+        }
+
+        completed.OnComplete?.Invoke(heightmap);
+        TryDispatchNext();
     }
 
     private static void ReleaseTexture()
@@ -102,5 +193,7 @@ public static class Noise
     {
         ReleaseTexture();
         heightmapShader = null;
+        pendingRequests.Clear();
+        isProcessingRequest = false;
     }
 }

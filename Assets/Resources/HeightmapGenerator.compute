@@ -61,7 +61,10 @@ float fbm(float2 p, int seed)
 void GenerateHeightmap(uint3 id : SV_DispatchThreadID)
 {
     if(id.x >= mapSize || id.y >= mapSize) return;
-    float2 pos = float2(id.x, id.y) / scale + offset;
+    // pos = (position voxel monde) * fréquence. offset est en coordonnées de chunk,
+    // d'où la multiplication par mapSize pour obtenir la position voxel monde avant
+    // d'appliquer l'échelle (nécessaire pour la continuité entre chunks voisins).
+    float2 pos = (float2(id.x, id.y) + offset * (float)mapSize) * scale;
     float h = fbm(pos, worldSeed);
     HeightmapResult[id.xy] = h;
 }

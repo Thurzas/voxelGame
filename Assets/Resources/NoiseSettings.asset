@@ -12,9 +12,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 4413614820c30104c875490bd937e582, type: 3}
   m_Name: NoiseSettings
   m_EditorClassIdentifier: 
-  baseHeight: 64
-  heightMultiplier: 64
-  scale: 50
+  baseHeight: 128
+  heightMultiplier: 128
+  scale: 67
   octaves: 6
-  persistence: 0.5
-  lacunarity: 2
+  persistence: 0.408
+  lacunarity: 1.34

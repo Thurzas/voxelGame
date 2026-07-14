@@ -10,7 +10,6 @@ public class TreeDecorator : TerrainDecorator
 
     public TreeDecorator(float spawnChance = 0.5f) : base(spawnChance)
     {
-        Debug.Log($"TreeDecorator initialized with spawn chance: {spawnChance}");
     }
 
     public override bool CanPlace(Vector3Int position, Chunk chunk)
@@ -18,12 +17,9 @@ public class TreeDecorator : TerrainDecorator
         // Position du bloc en dessous
         Vector3Int posBelow = new Vector3Int(position.x, position.y - 1, position.z);
         var blockBelow = World.Instance.GetVoxel(posBelow);
-        
-        Debug.Log($"Checking tree placement at {position}, block below ({posBelow}): {blockBelow.type}");
-        
+
         if (blockBelow.type != VoxelType.Grass)
         {
-            Debug.Log($"Cannot place tree at {position} - Block below is {blockBelow.type}");
             return false;
         }
 
@@ -35,26 +31,18 @@ public class TreeDecorator : TerrainDecorator
             Vector3Int checkPos = new Vector3Int(position.x, position.y + y, position.z);
             if (World.Instance.GetVoxel(checkPos).type != VoxelType.Air)
             {
-                Debug.Log($"Cannot place tree at {position} - Blocked at height {y} at {checkPos}");
                 hasSpace = false;
                 break;
             }
         }
 
-        if (hasSpace)
-        {
-            Debug.Log($"Tree placement approved at {position}");
-            return true;
-        }
-        
-        return false;
+        return hasSpace;
     }
 
     public override void Place(Vector3Int position, Chunk chunk)
     {
-        Debug.Log($"Starting tree placement at {position}");
         int height = UnityEngine.Random.Range(MIN_HEIGHT, MAX_HEIGHT + 1);
-        
+
         // Générer le tronc
         for (int y = 0; y < height; y++)
         {
@@ -84,7 +72,5 @@ public class TreeDecorator : TerrainDecorator
                 }
             }
         }
-        Debug.Log($"Finished placing tree at {position}");
     }
 }
-

@@ -38,14 +38,24 @@ public class Chunk : MonoBehaviour
         this.name = $"Chunk ({position.x}, {position.z})";
         this.meshRenderer.material = material; // Assigner le matériel (atlas de textures)
 
-        // TODO: Remplir voxelData avec la génération procédurale initiale
-        GenerateTerrain(); // Exemple simple
+        // Génération asynchrone (roadmap phase 3) : ne bloque pas le thread principal en
+        // attendant le readback GPU. La suite (remplissage de voxelData, décoration, mesh)
+        // se poursuit dans OnHeightmapReady une fois la heightmap disponible.
+        Vector2 offset = new Vector2(position.x, position.z);
+        Noise.RequestHeightmapAsync(Width, offset, OnHeightmapReady);
+    }
 
-        // Ajoutez des logs pour debug
-        Debug.Log($"Starting decoration for chunk at {position}");
+    // Callback du readback asynchrone (peut arriver plusieurs frames après Initialize).
+    void OnHeightmapReady(float[,] heightmap)
+    {
+        // Le chunk a pu être déchargé (GameObject détruit) pendant que la requête était
+        // en vol : "this == null" est le test standard Unity pour un objet détruit.
+        if (this == null) return;
+
+        GenerateTerrain(heightmap);
+
         TerrainDecoration decorator = new TerrainDecoration();
         decorator.DecorateChunk(this);
-        Debug.Log("Chunk decoration completed");
 
         // Marquer pour la génération initiale du mesh
         needsMeshUpdate = true;
@@ -122,12 +132,10 @@ public class Chunk : MonoBehaviour
 
     // --- Méthodes de génération (exemples) ---
 
-    void GenerateTerrain()
+    void GenerateTerrain(float[,] heightmap)
     {
-        Vector2 offset = new Vector2(chunkPosition.x, chunkPosition.z);
-        float[,] heightmap = Noise.GenerateHeightmap(Width, offset);
         NoiseSettings settings = Noise.CurrentSettings;
-        
+
         // --- Génération du terrain de base ---
         for (int x = 0; x < Width; x++)
         {
@@ -234,7 +242,6 @@ public class Chunk : MonoBehaviour
     void GenerateMeshWithShader()
     {
         // Implémentation détaillée dans la section suivante
-        //Debug.Log($"Generating mesh for chunk {chunkPosition} using Shaders (Conceptual)");
         // 1. Préparer les données pour le Compute Shader (ex: ComputeBuffer des voxelData)
         // 2. Dispatcher le Compute Shader
         // 3. Récupérer les buffers de sortie (vertices, triangles, uvs, etc.)
@@ -249,7 +256,6 @@ public class Chunk : MonoBehaviour
     // Version CPU très basique pour le test (NON OPTIMALE !)
      void GenerateMeshCPU_Naive()
     {
-        //Debug.Log($"Generating mesh for chunk {chunkPosition} using CPU (Naive)");
         System.Collections.Generic.List<Vector3> vertices = new System.Collections.Generic.List<Vector3>();
         System.Collections.Generic.List<int> triangles = new System.Collections.Generic.List<int>();
         System.Collections.Generic.List<Vector2> uvs = new System.Collections.Generic.List<Vector2>();
@@ -371,9 +377,7 @@ public class Chunk : MonoBehaviour
         float v = 1f - ((coords.y + 1) * UV_TILE_SIZE); // Première ligne en haut
 
         Rect result = new Rect(u, v, UV_TILE_SIZE, UV_TILE_SIZE);
-        
-        //Debug.Log($"VoxelType: {type}, Normal: {normal}, Tile: {coords}, UV: {result}");
-        
+
         return result;
     }
 

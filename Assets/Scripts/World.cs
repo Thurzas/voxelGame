@@ -1,6 +1,8 @@
 // Fichier: World.cs (Singleton ou accessible globalement)
 using System.Collections.Generic;
 using UnityEngine;
+using EcsWorld = Unity.Entities.World;
+using VoxelGame.Streaming;
 
 public class World : MonoBehaviour
 {
@@ -15,12 +17,14 @@ public class World : MonoBehaviour
     [SerializeField] private NoiseSettings terrainSettings;
 
     // --- Gestion des Chunks ---
+    // La décision de quels chunks doivent être chargés/déchargés est pilotée par
+    // VoxelGame.Streaming.ChunkStreamingRequestSystem (roadmap phase 2). World reste le
+    // pont temporaire : il instancie/détruit encore les GameObjects Chunk et gère leur
+    // mise à jour de mesh.
     public Dictionary<Vector2Int, Chunk> activeChunks = new Dictionary<Vector2Int, Chunk>();
     private Transform playerTransform; // Pour savoir où charger/décharger les chunks
 
     private Vector2Int lastPlayerChunkCoord;
-    private HashSet<Vector2Int> chunksToLoad = new HashSet<Vector2Int>();
-    private HashSet<Vector2Int> chunksToUnload = new HashSet<Vector2Int>();
 
     void Awake()
     {
@@ -56,8 +60,8 @@ public class World : MonoBehaviour
         if (player != null)
         {
             playerTransform = player.transform;
-            // Charger les chunks initiaux autour du joueur
-            UpdateChunksAroundPlayer(GetChunkCoordsFromWorldPos(playerTransform.position));
+            lastPlayerChunkCoord = GetChunkCoordsFromWorldPos(playerTransform.position);
+            PushStreamingConfig(lastPlayerChunkCoord);
         }
         else
         {
@@ -72,75 +76,47 @@ public class World : MonoBehaviour
         // Obtenir les coordonnées du chunk où se trouve le joueur
         Vector2Int currentPlayerChunkCoord = GetChunkCoordsFromWorldPos(playerTransform.position);
 
-        // Si le joueur a changé de chunk, mettre à jour les chunks
+        // Si le joueur a changé de chunk, notifier VoxelGame.Streaming.ChunkStreamingRequestSystem
+        // (c'est lui qui décide désormais quels chunks charger/décharger, cf. roadmap phase 2).
         if (currentPlayerChunkCoord != lastPlayerChunkCoord)
         {
-            UpdateChunksAroundPlayer(currentPlayerChunkCoord);
             lastPlayerChunkCoord = currentPlayerChunkCoord;
+            PushStreamingConfig(currentPlayerChunkCoord);
         }
 
-        // Traiter les chunks à charger/décharger
-        ProcessChunkUpdates();
-    }
-
-    void UpdateChunksAroundPlayer(Vector2Int playerChunkCoord)
-    {
-        chunksToLoad.Clear();
-        chunksToUnload.Clear();
-
-        // Déterminer quels chunks devraient être chargés
-        for (int x = -renderDistance; x <= renderDistance; x++)
-        {
-            for (int z = -renderDistance; z <= renderDistance; z++)
-            {
-                Vector2Int chunkCoord = new Vector2Int(playerChunkCoord.x + x, playerChunkCoord.y + z);
-                
-                // Si le chunk n'est pas déjà chargé, l'ajouter à la liste de chargement
-                if (!activeChunks.ContainsKey(chunkCoord))
-                {
-                    chunksToLoad.Add(chunkCoord);
-                }
-            }
-        }
-
-        // Identifier les chunks à décharger (ceux qui sont trop loin)
-        foreach (var chunk in activeChunks)
-        {
-            Vector2Int coord = chunk.Key;
-            if (Mathf.Abs(coord.x - playerChunkCoord.x) > renderDistance ||
-                Mathf.Abs(coord.y - playerChunkCoord.y) > renderDistance)
-            {
-                chunksToUnload.Add(coord);
-            }
-        }
-    }
-
-    void ProcessChunkUpdates()
-    {
-        // Décharger les chunks trop éloignés
-        foreach (var coord in chunksToUnload)
-        {
-            if (activeChunks.TryGetValue(coord, out Chunk chunk))
-            {
-                Destroy(chunk.gameObject);
-                activeChunks.Remove(coord);
-            }
-        }
-
-        // Charger les nouveaux chunks
-        foreach (var coord in chunksToLoad)
-        {
-            LoadChunk(coord);
-        }
-
-        // Mettre à jour les meshes des chunks actifs
+        // Mettre à jour les meshes des chunks actifs (indépendant de la décision de
+        // streaming : déclenché par les modifications de voxels, cf. Chunk.SetVoxel).
         foreach (var chunk in activeChunks.Values)
         {
             chunk.UpdateChunk();
         }
     }
 
-    void LoadChunk(Vector2Int coords) {
+    void PushStreamingConfig(Vector2Int playerChunkCoord)
+    {
+        var ecsWorld = EcsWorld.DefaultGameObjectInjectionWorld;
+        if (ecsWorld == null || !ecsWorld.IsCreated)
+        {
+            return;
+        }
+
+        var entityManager = ecsWorld.EntityManager;
+        var query = entityManager.CreateEntityQuery(typeof(ChunkStreamingConfig));
+        if (query.IsEmpty)
+        {
+            return; // Le OnCreate de ChunkStreamingRequestSystem n'a pas encore tourné.
+        }
+
+        entityManager.SetComponentData(query.GetSingletonEntity(), new ChunkStreamingConfig
+        {
+            PlayerChunkCoord = new Unity.Mathematics.int2(playerChunkCoord.x, playerChunkCoord.y),
+            RenderDistance = renderDistance,
+        });
+    }
+
+    // Appelé par VoxelGame.Streaming.ChunkStreamingBridgeSystem (roadmap phase 2) pour les
+    // entités passées à l'état Requested.
+    public void LoadChunk(Vector2Int coords) {
          if (!activeChunks.ContainsKey(coords)) {
              GameObject newChunkObject = Instantiate(chunkPrefab, Vector3.zero, Quaternion.identity, this.transform); // Parenté au World
              Chunk newChunk = newChunkObject.GetComponent<Chunk>();
@@ -148,12 +124,20 @@ public class World : MonoBehaviour
                  Vector3Int chunkPos3D = new Vector3Int(coords.x, 0, coords.y); // Y=0 pour la position du chunk
                  newChunk.Initialize(chunkPos3D, worldMaterial);
                  activeChunks.Add(coords, newChunk);
-                 //Debug.Log($"Loaded Chunk at {coords}");
              } else {
                  Debug.LogError($"Le prefab de Chunk n'a pas de script Chunk attaché !");
                  Destroy(newChunkObject);
              }
          }
+    }
+
+    // Appelé par VoxelGame.Streaming.ChunkStreamingBridgeSystem (roadmap phase 2) pour les
+    // entités passées à l'état Unloading.
+    public void UnloadChunk(Vector2Int coords) {
+        if (activeChunks.TryGetValue(coords, out Chunk chunk)) {
+            Destroy(chunk.gameObject);
+            activeChunks.Remove(coords);
+        }
     }
 
     // --- Accès aux Voxels (méthodes helper) ---

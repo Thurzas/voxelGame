@@ -592,7 +592,17 @@ public class Chunk : MonoBehaviour
         }
 
         int capturedLoY = loY;
-        VoxelMesherGpu.RequestFaces(gpuPaddedBuffer, paddedLength, Size, innerHeight, Size, paddedWidth, paddedHeightStride, capturedLoY, OnGpuFacesReady);
+        // Priorité = distance au carré au joueur : un remaillage déclenché par une édition
+        // (SetVoxel) ou, plus tard, par la simulation de fluides passe devant un lot de premiers
+        // maillages de chunks lointains encore en attente, au lieu de faire la queue derrière eux
+        // (cf. VoxelMesherGpu, pool de dispatchs concurrents priorisé).
+        float priority = 0f;
+        if (World.Instance != null)
+        {
+            Vector3 chunkCenter = transform.position + (Vector3.one * (Size * 0.5f));
+            priority = (chunkCenter - World.Instance.PlayerPosition).sqrMagnitude;
+        }
+        VoxelMesherGpu.RequestFaces(gpuPaddedBuffer, paddedLength, Size, innerHeight, Size, paddedWidth, paddedHeightStride, capturedLoY, priority, OnGpuFacesReady);
     }
 
     // Callback du readback GPU (peut arriver plusieurs frames après GenerateMeshGpu).

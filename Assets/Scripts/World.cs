@@ -226,6 +226,12 @@ public class World : MonoBehaviour
 
     // --- Accès aux Voxels (méthodes helper) ---
 
+    // Position du joueur pour la priorisation des remaillages GPU (cf. VoxelMesherGpu) — plus
+    // pertinent que la seule distance de chargement de chunks une fois que des éditions/de la
+    // simulation de fluides pourront déclencher des remaillages en dehors de l'ordre de
+    // chargement initial.
+    public Vector3 PlayerPosition => playerTransform != null ? playerTransform.position : Vector3.zero;
+
     public Chunk GetChunk(Vector3Int chunkPosition) {
          activeChunks.TryGetValue(chunkPosition, out Chunk chunk);
          return chunk;
@@ -276,10 +282,7 @@ public class World : MonoBehaviour
         }
         else
         {
-            // DIAG temporaire (roadmap phase SVO sous-étape 2) : inclut les coordonnées de chunk
-            // calculées pour diagnostiquer un éventuel décalage introduit par le passage au
-            // streaming 3D — à retirer une fois la cause confirmée.
-            Debug.LogWarning($"Tentative de modification d'un voxel dans un chunk non chargé à {worldPos} (chunkCoord calculé = {GetChunkCoordsFromWorldPos(worldPos)})");
+            Debug.LogWarning($"Tentative de modification d'un voxel dans un chunk non chargé à {worldPos}");
             // Idéalement, il faudrait charger le chunk ou mettre en file d'attente la modification
         }
     }

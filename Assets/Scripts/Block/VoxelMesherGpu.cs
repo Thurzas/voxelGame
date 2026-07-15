@@ -10,8 +10,12 @@ using UnityEngine.Rendering;
 // masque CPU pour la détection des faces visibles. La construction du mesh/UV reste côté
 // CPU (Chunk.AddGreedyFace, réutilisée telle quelle avec largeur=hauteur=1 : cette
 // première version ne fusionne pas les faces adjacentes, cf. décision avec l'utilisateur
-// — la fusion greedy sur GPU est repoussée après le SVO). Suit le même schéma que
-// Noise.cs : compute shader + readback asynchrone, file de requêtes séquentielle.
+// — la fusion greedy sur GPU est repoussée après le SVO). Suit le même schéma de pool que
+// Noise.cs, mais avec en plus une file priorisée par distance : contrairement au bruit (les
+// requêtes arrivent déjà groupées/triées par ChunkStreamingBridgeSystem), un remaillage peut
+// être déclenché à tout moment par une édition de voxel (SetVoxel) ou, plus tard, par la
+// simulation de fluides — sans priorité, une édition proche du joueur attendrait derrière
+// tout un lot de premiers maillages de chunks en cours de chargement (constaté en jeu).
 public static class VoxelMesherGpu
 {
     public readonly struct Face
@@ -36,12 +40,27 @@ public static class VoxelMesherGpu
     // damier) ; un avertissement signale si elle est dépassée.
     private const int MaxFaces = 131072;
 
+    // Nombre de dispatchs GPU (voxels+faces+readback) en vol simultanément. Plus élevé que 1
+    // (ancienne version strictement séquentielle) pour absorber le débit nécessaire une fois la
+    // simulation de fluides en place (remaillages continus sur plusieurs chunks à la fois, pas
+    // seulement au chargement) ; volontairement plus bas que le pool de 16 textures de Noise.cs
+    // — chaque slot réserve ici un ExposedFaces de ~2 Mo (MaxFaces × 16 octets), donc 16 slots
+    // représenterait ~32 Mo rien que pour ce buffer. À réajuster si le profilage le justifie.
+    private const int MaxConcurrentRequests = 4;
+
     private static ComputeShader shader;
-    private static ComputeBuffer voxelBuffer;
-    private static int voxelBufferCapacity;
-    private static ComputeBuffer faceBuffer;
-    private static ComputeBuffer countBuffer;
-    private static bool busy;
+
+    private struct Slot
+    {
+        public ComputeBuffer VoxelBuffer;
+        public int VoxelBufferCapacity;
+        public ComputeBuffer FaceBuffer;
+        public ComputeBuffer CountBuffer;
+        public bool Busy;
+    }
+
+    private static Slot[] slots;
+    private static int busyCount;
 
     private readonly struct PendingRequest
     {
@@ -53,10 +72,11 @@ public static class VoxelMesherGpu
         public readonly int PaddedWidth;
         public readonly int PaddedHeightStride;
         public readonly int LoY;
+        public readonly float Priority; // plus petit = traité en premier (ex: distance au carré au joueur)
         public readonly Action<Face[], int> OnComplete;
 
         public PendingRequest(uint[] paddedVoxels, int paddedLength, int innerWidth, int innerHeight, int innerDepth,
-            int paddedWidth, int paddedHeightStride, int loY, Action<Face[], int> onComplete)
+            int paddedWidth, int paddedHeightStride, int loY, float priority, Action<Face[], int> onComplete)
         {
             PaddedVoxels = paddedVoxels;
             PaddedLength = paddedLength;
@@ -66,11 +86,16 @@ public static class VoxelMesherGpu
             PaddedWidth = paddedWidth;
             PaddedHeightStride = paddedHeightStride;
             LoY = loY;
+            Priority = priority;
             OnComplete = onComplete;
         }
     }
 
-    private static readonly Queue<PendingRequest> pending = new Queue<PendingRequest>();
+    // Liste plutôt que Queue : la sélection de la prochaine requête à dispatcher se fait par
+    // priorité (scan linéaire), pas par ordre d'arrivée — le nombre de requêtes en attente reste
+    // modeste (quelques dizaines au pire, lors d'un chargement massif) donc un scan O(n) à
+    // chaque libération de slot est largement suffisant, pas besoin d'un tas.
+    private static readonly List<PendingRequest> pending = new List<PendingRequest>();
 
     private static bool EnsureShaderLoaded()
     {
@@ -88,62 +113,108 @@ public static class VoxelMesherGpu
         return true;
     }
 
-    private static void EnsureBuffers(int paddedLength)
+    private static void EnsureSlots()
     {
-        if (voxelBuffer == null || voxelBufferCapacity < paddedLength)
+        if (slots != null)
         {
-            voxelBuffer?.Release();
-            voxelBufferCapacity = paddedLength;
-            voxelBuffer = new ComputeBuffer(paddedLength, sizeof(uint));
+            return;
         }
 
-        if (faceBuffer == null)
+        slots = new Slot[MaxConcurrentRequests];
+        for (int i = 0; i < slots.Length; i++)
         {
-            faceBuffer = new ComputeBuffer(MaxFaces, sizeof(uint) * 4, ComputeBufferType.Append);
-        }
-
-        if (countBuffer == null)
-        {
-            countBuffer = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Raw);
+            slots[i].FaceBuffer = new ComputeBuffer(MaxFaces, sizeof(uint) * 4, ComputeBufferType.Append);
+            slots[i].CountBuffer = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Raw);
         }
     }
 
-    // paddedVoxels : buffer aplati (voir VoxelFaceCulling.compute pour la disposition
-    // exacte), longueur paddedLength. onComplete est appelé avec la liste des faces
-    // exposées (coordonnées locales au chunk) une fois le readback GPU terminé,
-    // potentiellement plusieurs frames plus tard.
-    public static void RequestFaces(uint[] paddedVoxels, int paddedLength, int innerWidth, int innerHeight,
-        int innerDepth, int paddedWidth, int paddedHeightStride, int loY, Action<Face[], int> onComplete)
+    private static void EnsureVoxelBuffer(int slotIndex, int paddedLength)
     {
-        pending.Enqueue(new PendingRequest(paddedVoxels, paddedLength, innerWidth, innerHeight, innerDepth,
-            paddedWidth, paddedHeightStride, loY, onComplete));
+        ref Slot slot = ref slots[slotIndex];
+        if (slot.VoxelBuffer == null || slot.VoxelBufferCapacity < paddedLength)
+        {
+            slot.VoxelBuffer?.Release();
+            slot.VoxelBufferCapacity = paddedLength;
+            slot.VoxelBuffer = new ComputeBuffer(paddedLength, sizeof(uint));
+        }
+    }
+
+    // paddedVoxels : buffer aplati (voir VoxelFaceCulling.compute pour la disposition exacte),
+    // longueur paddedLength. priority : plus petit = traité avant les autres requêtes en
+    // attente dès qu'un slot se libère (typiquement la distance au carré au joueur — cf.
+    // Chunk.GenerateMeshGpu). onComplete est appelé avec la liste des faces exposées
+    // (coordonnées locales au chunk) une fois le readback GPU terminé, potentiellement
+    // plusieurs frames plus tard.
+    public static void RequestFaces(uint[] paddedVoxels, int paddedLength, int innerWidth, int innerHeight,
+        int innerDepth, int paddedWidth, int paddedHeightStride, int loY, float priority, Action<Face[], int> onComplete)
+    {
+        pending.Add(new PendingRequest(paddedVoxels, paddedLength, innerWidth, innerHeight, innerDepth,
+            paddedWidth, paddedHeightStride, loY, priority, onComplete));
         TryDispatchNext();
+    }
+
+    private static int FindFreeSlot()
+    {
+        for (int i = 0; i < slots.Length; i++)
+        {
+            if (!slots[i].Busy)
+            {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static int FindHighestPriorityIndex()
+    {
+        int best = 0;
+        for (int i = 1; i < pending.Count; i++)
+        {
+            if (pending[i].Priority < pending[best].Priority)
+            {
+                best = i;
+            }
+        }
+        return best;
     }
 
     private static void TryDispatchNext()
     {
-        if (busy || pending.Count == 0)
+        EnsureSlots();
+
+        while (busyCount < MaxConcurrentRequests && pending.Count > 0)
         {
-            return;
+            int slotIndex = FindFreeSlot();
+            if (slotIndex < 0)
+            {
+                break; // ne devrait pas arriver tant que busyCount < MaxConcurrentRequests
+            }
+
+            int bestIndex = FindHighestPriorityIndex();
+            PendingRequest req = pending[bestIndex];
+            pending.RemoveAt(bestIndex);
+
+            if (!EnsureShaderLoaded())
+            {
+                req.OnComplete?.Invoke(Array.Empty<Face>(), 0);
+                continue;
+            }
+
+            DispatchSlot(slotIndex, req);
         }
+    }
 
-        if (!EnsureShaderLoaded())
-        {
-            PendingRequest failed = pending.Dequeue();
-            failed.OnComplete?.Invoke(Array.Empty<Face>(), 0);
-            TryDispatchNext();
-            return;
-        }
+    private static void DispatchSlot(int slotIndex, PendingRequest req)
+    {
+        EnsureVoxelBuffer(slotIndex, req.PaddedLength);
+        Slot slot = slots[slotIndex];
 
-        PendingRequest req = pending.Dequeue();
-        EnsureBuffers(req.PaddedLength);
-
-        voxelBuffer.SetData(req.PaddedVoxels, 0, 0, req.PaddedLength);
-        faceBuffer.SetCounterValue(0);
+        slot.VoxelBuffer.SetData(req.PaddedVoxels, 0, 0, req.PaddedLength);
+        slot.FaceBuffer.SetCounterValue(0);
 
         int kernel = shader.FindKernel("CullFaces");
-        shader.SetBuffer(kernel, "Voxels", voxelBuffer);
-        shader.SetBuffer(kernel, "ExposedFaces", faceBuffer);
+        shader.SetBuffer(kernel, "Voxels", slot.VoxelBuffer);
+        shader.SetBuffer(kernel, "ExposedFaces", slot.FaceBuffer);
         shader.SetInt("InnerWidth", req.InnerWidth);
         shader.SetInt("InnerHeight", req.InnerHeight);
         shader.SetInt("InnerDepth", req.InnerDepth);
@@ -156,19 +227,23 @@ public static class VoxelMesherGpu
         int groupsZ = Mathf.CeilToInt(req.InnerDepth / 4.0f);
         shader.Dispatch(kernel, Mathf.Max(1, groupsX), Mathf.Max(1, groupsY), Mathf.Max(1, groupsZ));
 
-        ComputeBuffer.CopyCount(faceBuffer, countBuffer, 0);
+        ComputeBuffer.CopyCount(slot.FaceBuffer, slot.CountBuffer, 0);
 
-        busy = true;
+        slots[slotIndex].Busy = true;
+        busyCount++;
 
         bool countReady = false;
         bool dataReady = false;
         uint faceCount = 0;
         NativeArray<uint4> rawFaces = default;
         Action<Face[], int> onCompleteCaptured = req.OnComplete;
+        ComputeBuffer faceBufferRef = slot.FaceBuffer;
+        ComputeBuffer countBufferRef = slot.CountBuffer;
 
         void Finish()
         {
-            busy = false;
+            slots[slotIndex].Busy = false;
+            busyCount--;
 
             Face[] result = Array.Empty<Face>();
             int count = 0;
@@ -194,7 +269,7 @@ public static class VoxelMesherGpu
             TryDispatchNext();
         }
 
-        AsyncGPUReadback.Request(countBuffer, request =>
+        AsyncGPUReadback.Request(countBufferRef, request =>
         {
             if (!request.hasError)
             {
@@ -207,7 +282,7 @@ public static class VoxelMesherGpu
             }
         });
 
-        AsyncGPUReadback.Request(faceBuffer, request =>
+        AsyncGPUReadback.Request(faceBufferRef, request =>
         {
             if (!request.hasError)
             {
@@ -223,15 +298,19 @@ public static class VoxelMesherGpu
 
     public static void Cleanup()
     {
-        voxelBuffer?.Release();
-        voxelBuffer = null;
-        voxelBufferCapacity = 0;
-        faceBuffer?.Release();
-        faceBuffer = null;
-        countBuffer?.Release();
-        countBuffer = null;
+        if (slots != null)
+        {
+            for (int i = 0; i < slots.Length; i++)
+            {
+                slots[i].VoxelBuffer?.Release();
+                slots[i].FaceBuffer?.Release();
+                slots[i].CountBuffer?.Release();
+            }
+            slots = null;
+        }
+
         pending.Clear();
-        busy = false;
+        busyCount = 0;
         shader = null;
     }
 }

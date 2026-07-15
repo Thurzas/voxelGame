@@ -6,8 +6,6 @@ using UnityEngine.Rendering;
 public static class Noise
 {
     private static ComputeShader heightmapShader;
-    private static RenderTexture heightmapTexture;
-    private static int currentMapSize;
 
     public static NoiseSettings CurrentSettings { get; private set; }
 
@@ -23,45 +21,28 @@ public static class Noise
     public static float Persistence { get; set; } = 0.5f;
     public static float Lacunarity { get; set; } = 2.0f;
 
-    private static void Initialize(int size)
+    private static bool EnsureShaderLoaded()
     {
-        // Charger le shader seulement s'il n'est pas déjà chargé
+        if (heightmapShader != null)
+        {
+            return true;
+        }
+
+        heightmapShader = Resources.Load<ComputeShader>("HeightmapGenerator");
         if (heightmapShader == null)
         {
-            heightmapShader = Resources.Load<ComputeShader>("HeightmapGenerator");
-            if (heightmapShader == null)
-            {
-                Debug.LogError("Failed to load HeightmapGenerator compute shader!");
-                return;
-            }
-        }
-
-        // Créer ou recréer la texture si nécessaire
-        if (heightmapTexture == null || currentMapSize != size)
-        {
-            ReleaseTexture();
-            currentMapSize = size;
-            heightmapTexture = new RenderTexture(size, size, 0, RenderTextureFormat.RFloat);
-            heightmapTexture.enableRandomWrite = true;
-            heightmapTexture.Create();
-        }
-    }
-
-    // Configure les paramètres du compute shader et dispatch. Retourne false si le
-    // shader/la texture ne sont pas disponibles (déjà loggé dans ce cas).
-    private static bool PrepareAndDispatch(int size, Vector2 offset)
-    {
-        Initialize(size);
-
-        if (heightmapShader == null || heightmapTexture == null)
-        {
-            Debug.LogError("Heightmap generation failed - shader or texture not initialized!");
+            Debug.LogError("Failed to load HeightmapGenerator compute shader!");
             return false;
         }
 
+        return true;
+    }
+
+    private static void DispatchInto(RenderTexture target, int size, Vector2 offset)
+    {
         int kernelIndex = heightmapShader.FindKernel("GenerateHeightmap");
         heightmapShader.SetInt("worldSeed", World.Instance.worldSeed);
-        heightmapShader.SetTexture(kernelIndex, "HeightmapResult", heightmapTexture);
+        heightmapShader.SetTexture(kernelIndex, "HeightmapResult", target);
         heightmapShader.SetFloat("scale", Scale);
         heightmapShader.SetVector("offset", offset);
         heightmapShader.SetInt("octaves", Octaves);
@@ -71,22 +52,40 @@ public static class Noise
 
         int threadGroups = Mathf.CeilToInt(size / 8.0f);
         heightmapShader.Dispatch(kernelIndex, threadGroups, threadGroups, 1);
-        return true;
     }
 
-    // Génération synchrone : réservée à l'aperçu de l'éditeur (NoiseSettingsEditor), où un
-    // stall CPU/GPU ponctuel est acceptable (outil, pas gameplay). Le chemin gameplay
-    // utilise RequestHeightmapAsync ci-dessous (roadmap phase 3).
+    // --- Génération synchrone : réservée à l'aperçu de l'éditeur (NoiseSettingsEditor) ---
+    // Utilise sa propre texture, complètement séparée du pool async ci-dessous : les deux
+    // chemins ne doivent jamais partager une texture GPU (l'un pourrait écraser les
+    // données de l'autre en plein readback).
+    private static RenderTexture previewTexture;
+    private static int previewTextureSize = -1;
+
     public static float[,] GenerateHeightmap(int size, Vector2 offset)
     {
         float[,] heightmap = new float[size, size];
 
-        if (!PrepareAndDispatch(size, offset))
+        if (!EnsureShaderLoaded())
         {
             return heightmap;
         }
 
-        RenderTexture.active = heightmapTexture;
+        if (previewTexture == null || previewTextureSize != size)
+        {
+            if (previewTexture != null)
+            {
+                previewTexture.Release();
+            }
+
+            previewTextureSize = size;
+            previewTexture = new RenderTexture(size, size, 0, RenderTextureFormat.RFloat);
+            previewTexture.enableRandomWrite = true;
+            previewTexture.Create();
+        }
+
+        DispatchInto(previewTexture, size, offset);
+
+        RenderTexture.active = previewTexture;
         Texture2D temp = new Texture2D(size, size, TextureFormat.RFloat, false);
         temp.ReadPixels(new Rect(0, 0, size, size), 0, 0);
         temp.Apply();
@@ -104,10 +103,17 @@ public static class Noise
     }
 
     // --- Génération asynchrone (gameplay, roadmap phase 3) ---
-    // heightmapTexture est une ressource GPU partagée entre toutes les requêtes : on ne
-    // dispatch une nouvelle requête dedans qu'une fois le readback de la précédente
-    // terminé, d'où la file FIFO traitée une requête à la fois. Élimine le stall
-    // CPU/GPU de ReadPixels (le thread principal n'attend jamais le GPU).
+    // Pool de textures réutilisables permettant plusieurs requêtes GPU en vol en même
+    // temps (au lieu d'une seule à la fois) : élimine à la fois le stall CPU/GPU
+    // (AsyncGPUReadback) ET le goulot d'étranglement d'un traitement strictement
+    // séquentiel (insuffisant dès qu'un renderDistance raisonnable demande des dizaines
+    // de chunks d'un coup - constaté en jeu : chargement trop lent, joueur tombant à
+    // travers le monde). Chaque requête en vol porte son propre état dans la closure du
+    // callback (texture, taille, callback utilisateur) : pas de file partagée à
+    // dépiler en retour d'un événement asynchrone, donc pas de risque de dépiler une
+    // file vide si l'ordre de complétion des requêtes diffère de l'ordre de lancement.
+    private const int MaxConcurrentRequests = 16;
+
     private readonly struct PendingRequest
     {
         public readonly int Size;
@@ -123,7 +129,9 @@ public static class Noise
     }
 
     private static readonly Queue<PendingRequest> pendingRequests = new Queue<PendingRequest>();
-    private static bool isProcessingRequest;
+    private static readonly Queue<RenderTexture> freeTextures = new Queue<RenderTexture>();
+    private static int pooledTextureSize = -1;
+    private static int inFlightCount;
 
     public static void RequestHeightmapAsync(int size, Vector2 offset, Action<float[,]> onComplete)
     {
@@ -133,30 +141,30 @@ public static class Noise
 
     private static void TryDispatchNext()
     {
-        if (isProcessingRequest || pendingRequests.Count == 0)
+        while (inFlightCount < MaxConcurrentRequests && pendingRequests.Count > 0)
         {
-            return;
+            PendingRequest next = pendingRequests.Dequeue();
+
+            if (!EnsureShaderLoaded())
+            {
+                next.OnComplete?.Invoke(new float[next.Size, next.Size]);
+                continue;
+            }
+
+            RenderTexture tex = RentTexture(next.Size);
+            DispatchInto(tex, next.Size, next.Offset);
+
+            inFlightCount++;
+            int size = next.Size;
+            Action<float[,]> onComplete = next.OnComplete;
+            AsyncGPUReadback.Request(tex, 0, request => OnReadbackComplete(request, size, tex, onComplete));
         }
-
-        PendingRequest next = pendingRequests.Peek();
-
-        if (!PrepareAndDispatch(next.Size, next.Offset))
-        {
-            pendingRequests.Dequeue();
-            next.OnComplete?.Invoke(new float[next.Size, next.Size]);
-            TryDispatchNext();
-            return;
-        }
-
-        isProcessingRequest = true;
-        int size = next.Size;
-        AsyncGPUReadback.Request(heightmapTexture, 0, request => OnReadbackComplete(request, size));
     }
 
-    private static void OnReadbackComplete(AsyncGPUReadbackRequest request, int size)
+    private static void OnReadbackComplete(AsyncGPUReadbackRequest request, int size, RenderTexture tex, Action<float[,]> onComplete)
     {
-        PendingRequest completed = pendingRequests.Dequeue();
-        isProcessingRequest = false;
+        inFlightCount--;
+        ReturnTexture(tex);
 
         float[,] heightmap = new float[size, size];
         if (request.hasError)
@@ -175,25 +183,88 @@ public static class Noise
             }
         }
 
-        completed.OnComplete?.Invoke(heightmap);
+        // Ne PAS invoquer onComplete tout de suite : le readback GPU est terminé, mais le
+        // travail qui suit côté appelant (remplissage des voxels, décoration, greedy
+        // meshing, bake du MeshCollider) est lourd et synchrone. Si plusieurs readbacks
+        // se terminent la même frame (typique juste après un déplacement de chunk, avec
+        // jusqu'à MaxConcurrentRequests requêtes en vol), les invoquer tous immédiatement
+        // concentre tout ce travail sur une seule frame -> freeze. On les met en attente
+        // et un appelant (World.Update) les délivre à un rythme étalé via
+        // DeliverReadyResults. Constaté en jeu (freeze au démarrage + à chaque
+        // déplacement) avant ce correctif.
+        readyResults.Enqueue((heightmap, onComplete));
         TryDispatchNext();
     }
 
-    private static void ReleaseTexture()
+    private static readonly Queue<(float[,] heightmap, Action<float[,]> onComplete)> readyResults = new Queue<(float[,], Action<float[,]>)>();
+
+    // À appeler une fois par frame (World.Update) : délivre des résultats déjà prêts en
+    // respectant un budget de temps, pour étaler le travail de finalisation des chunks
+    // sur plusieurs frames plutôt que tout faire d'un coup. Délivre toujours au moins un
+    // résultat s'il y en a (pas de famine si maxMilliseconds est trop petit).
+    public static void DeliverReadyResults(float maxMilliseconds)
     {
-        if (heightmapTexture != null)
+        if (readyResults.Count == 0)
         {
-            heightmapTexture.Release();
-            heightmapTexture = null;
+            return;
         }
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        do
+        {
+            var (heightmap, onComplete) = readyResults.Dequeue();
+            onComplete?.Invoke(heightmap);
+        }
+        while (readyResults.Count > 0 && stopwatch.Elapsed.TotalMilliseconds < maxMilliseconds);
     }
 
-    // Méthode à appeler lors de la fermeture du jeu ou du changement de scène
+    private static RenderTexture RentTexture(int size)
+    {
+        if (pooledTextureSize != size)
+        {
+            // Ne devrait pas arriver en jeu (toujours Width) ; sécurité si la taille change.
+            while (freeTextures.Count > 0)
+            {
+                freeTextures.Dequeue().Release();
+            }
+            pooledTextureSize = size;
+        }
+
+        if (freeTextures.Count > 0)
+        {
+            return freeTextures.Dequeue();
+        }
+
+        var tex = new RenderTexture(size, size, 0, RenderTextureFormat.RFloat);
+        tex.enableRandomWrite = true;
+        tex.Create();
+        return tex;
+    }
+
+    private static void ReturnTexture(RenderTexture tex)
+    {
+        freeTextures.Enqueue(tex);
+    }
+
+    // Méthode à appeler lors de la fermeture du jeu ou du changement de scène. Les
+    // requêtes déjà en vol (AsyncGPUReadback) ne peuvent pas être annulées : leur
+    // callback s'exécutera quand même plus tard et gérera son propre nettoyage (texture
+    // remise dans un pool qui ne sera simplement plus utilisé).
     public static void Cleanup()
     {
-        ReleaseTexture();
-        heightmapShader = null;
+        if (previewTexture != null)
+        {
+            previewTexture.Release();
+            previewTexture = null;
+        }
+
+        while (freeTextures.Count > 0)
+        {
+            freeTextures.Dequeue().Release();
+        }
+
         pendingRequests.Clear();
-        isProcessingRequest = false;
+        readyResults.Clear();
+        heightmapShader = null;
     }
 }

@@ -13,8 +13,8 @@ MonoBehaviour:
   m_Name: NoiseSettings
   m_EditorClassIdentifier: 
   baseHeight: 128
-  heightMultiplier: 128
-  scale: 67
+  heightMultiplier: 1
+  scale: 30
   octaves: 6
   persistence: 0.408
   lacunarity: 1.34

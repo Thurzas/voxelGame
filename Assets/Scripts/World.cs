@@ -16,6 +16,13 @@ public class World : MonoBehaviour
     public int worldSeed;
     [SerializeField] private NoiseSettings terrainSettings;
 
+    // Budget de temps (ms) accordé chaque frame pour finaliser des chunks dont la
+    // heightmap GPU est prête (remplissage voxels + décoration + meshing + collider) —
+    // étale ce travail sur plusieurs frames au lieu de tout faire d'un coup dès qu'un lot
+    // de requêtes async se termine en même temps (roadmap phase 3, correctif du freeze
+    // constaté au chargement/déplacement). À ajuster selon le profilage.
+    public float terrainFinalizeBudgetMs = 4f;
+
     // --- Gestion des Chunks ---
     // La décision de quels chunks doivent être chargés/déchargés est pilotée par
     // VoxelGame.Streaming.ChunkStreamingRequestSystem (roadmap phase 2). World reste le
@@ -71,6 +78,11 @@ public class World : MonoBehaviour
 
     void Update()
     {
+        // Délivre les heightmaps GPU déjà prêtes, en respectant un budget de temps par
+        // frame (indépendant de playerTransform : doit tourner même si le joueur n'est
+        // pas encore trouvé).
+        Noise.DeliverReadyResults(terrainFinalizeBudgetMs);
+
         if (playerTransform == null) return;
 
         // Obtenir les coordonnées du chunk où se trouve le joueur

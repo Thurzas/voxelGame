@@ -54,12 +54,25 @@ namespace VoxelGame.Data
             voxels[Index(x, y, z)] = value;
         }
 
+        // Buffer statique réutilisé par TryCompact (voir remarque ci-dessous), pour éviter
+        // une allocation managée à chaque appel. La compaction se fait toujours de façon
+        // séquentielle sur le thread principal, jamais en parallèle.
+        private static Voxel[] compactScratch;
+
         /// <summary>
         /// Scans the dense grid; if every voxel shares the same value, frees the
         /// backing array and switches this brick to a constant/homogeneous
         /// representation (GigaVoxels §5.1.2 constant-region compression).
         /// Returns true if the brick was (or already is) homogeneous.
         /// </summary>
+        /// <remarks>
+        /// Copies the NativeArray into a managed buffer with a single bulk
+        /// <see cref="NativeArray{T}.CopyTo(T[])"/> call before comparing, rather than
+        /// reading <c>voxels[i]</c> element-by-element: outside a Burst-compiled job,
+        /// every individual NativeArray access pays an atomic safety-handle check, which
+        /// dominated chunk generation cost when this scanned all 4096 voxels one at a
+        /// time (measured regression, see VoxelGame roadmap phase 4).
+        /// </remarks>
         public bool TryCompact()
         {
             if (IsHomogeneous)
@@ -69,10 +82,16 @@ namespace VoxelGame.Data
 
             CheckDense();
 
-            Voxel first = voxels[0];
+            if (compactScratch == null)
+            {
+                compactScratch = new Voxel[VoxelCount];
+            }
+            voxels.CopyTo(compactScratch);
+
+            Voxel first = compactScratch[0];
             for (int i = 1; i < VoxelCount; i++)
             {
-                if (!voxels[i].Equals(first))
+                if (!compactScratch[i].Equals(first))
                 {
                     return false;
                 }
@@ -83,6 +102,31 @@ namespace VoxelGame.Data
             IsHomogeneous = true;
             HomogeneousValue = first;
             return true;
+        }
+
+        /// <summary>
+        /// Bulk-copies this brick's dense voxel data into <paramref name="destination"/>
+        /// (which must be at least <see cref="VoxelCount"/> long), in the same linear
+        /// order as <see cref="Index"/> (x fastest, then y, then z). A single
+        /// <see cref="NativeArray{T}.CopyTo(T[])"/> call, not a per-element read — for the
+        /// same reason as <see cref="TryCompact"/>.
+        /// </summary>
+        public void CopyDenseTo(Voxel[] destination)
+        {
+            CheckDense();
+            voxels.CopyTo(destination);
+        }
+
+        /// <summary>
+        /// Bulk-writes <paramref name="source"/> (at least <see cref="VoxelCount"/> long,
+        /// same linear order as <see cref="Index"/>) into this brick's dense storage via a
+        /// single <see cref="NativeArray{T}.CopyFrom(T[])"/> call, instead of calling
+        /// <see cref="Set"/> once per voxel.
+        /// </summary>
+        public void CopyFromDense(Voxel[] source)
+        {
+            CheckDense();
+            voxels.CopyFrom(source);
         }
 
         /// <summary>

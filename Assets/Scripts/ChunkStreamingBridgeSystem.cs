@@ -1,5 +1,6 @@
 using Unity.Collections;
 using Unity.Entities;
+using Unity.Mathematics;
 using UnityEngine;
 using VoxelGame.Data;
 using VoxelGame.Streaming;
@@ -27,46 +28,71 @@ public partial class ChunkStreamingBridgeSystem : SystemBase
             return;
         }
 
-        var toLoad = new NativeList<Entity>(Allocator.Temp);
-        var toLoadCoords = new NativeList<Unity.Mathematics.int2>(Allocator.Temp);
+        int2 playerChunkCoord = SystemAPI.GetSingleton<ChunkStreamingConfig>().PlayerChunkCoord;
+
+        var toLoad = new NativeList<LoadRequest>(Allocator.Temp);
         var toUnload = new NativeList<Entity>(Allocator.Temp);
-        var toUnloadCoords = new NativeList<Unity.Mathematics.int2>(Allocator.Temp);
+        var toUnloadCoords = new NativeList<int3>(Allocator.Temp);
 
         foreach (var (key, lifecycle, entity) in
                  SystemAPI.Query<RefRO<ChunkMortonKey>, RefRO<ChunkLifecycle>>().WithEntityAccess())
         {
-            MortonCode.Decode(key.ValueRO.Morton, out int x, out _, out int z);
+            MortonCode.Decode(key.ValueRO.Morton, out int x, out int y, out int z);
 
             switch (lifecycle.ValueRO.State)
             {
                 case ChunkLifecycleState.Requested:
-                    toLoad.Add(entity);
-                    toLoadCoords.Add(new Unity.Mathematics.int2(x, z));
+                    var coord = new int3(x, y, z);
+                    // Distance en XZ uniquement : la décision de streaming reste pilotée en XZ
+                    // pour cette sous-étape (toutes les couches Y d'une colonne sont chargées
+                    // ensemble, cf. ChunkStreamingRequestSystem), donc ordonner par XZ suffit à
+                    // faire apparaître les colonnes proches en premier.
+                    int2 delta = coord.xz - playerChunkCoord;
+                    toLoad.Add(new LoadRequest
+                    {
+                        Entity = entity,
+                        Coord = coord,
+                        DistanceSq = (delta.x * delta.x) + (delta.y * delta.y),
+                    });
                     break;
                 case ChunkLifecycleState.Unloading:
                     toUnload.Add(entity);
-                    toUnloadCoords.Add(new Unity.Mathematics.int2(x, z));
+                    toUnloadCoords.Add(new int3(x, y, z));
                     break;
             }
         }
 
+        // Tri à la source, par distance au joueur : les files d'attente en aval (pool async de
+        // heightmaps dans Noise.cs, queue de meshing GPU dans VoxelMesherGpu) sont de simples
+        // FIFO — les alimenter déjà dans l'ordre de proximité fait apparaître les chunks proches
+        // en premier sans avoir besoin de rendre ces files elles-mêmes priorité-conscientes.
+        toLoad.AsArray().Sort();
+
         for (int i = 0; i < toLoad.Length; i++)
         {
-            var coord = toLoadCoords[i];
-            global::World.Instance.LoadChunk(new Vector2Int(coord.x, coord.y));
-            EntityManager.SetComponentData(toLoad[i], new ChunkLifecycle { State = ChunkLifecycleState.Loaded });
+            LoadRequest request = toLoad[i];
+            global::World.Instance.LoadChunk(new Vector3Int(request.Coord.x, request.Coord.y, request.Coord.z));
+            EntityManager.SetComponentData(request.Entity, new ChunkLifecycle { State = ChunkLifecycleState.Loaded });
         }
 
         for (int i = 0; i < toUnload.Length; i++)
         {
             var coord = toUnloadCoords[i];
-            global::World.Instance.UnloadChunk(new Vector2Int(coord.x, coord.y));
+            global::World.Instance.UnloadChunk(new Vector3Int(coord.x, coord.y, coord.z));
             EntityManager.DestroyEntity(toUnload[i]);
         }
 
         toLoad.Dispose();
-        toLoadCoords.Dispose();
         toUnload.Dispose();
         toUnloadCoords.Dispose();
+    }
+
+    private struct LoadRequest : System.IComparable<LoadRequest>
+    {
+        public Entity Entity;
+        public int3 Coord;
+        public int DistanceSq;
+
+        public int CompareTo(LoadRequest other) => DistanceSq.CompareTo(other.DistanceSq);
     }
 }

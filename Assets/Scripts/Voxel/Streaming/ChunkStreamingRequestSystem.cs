@@ -5,17 +5,31 @@ using VoxelGame.Data;
 namespace VoxelGame.Streaming
 {
     /// <summary>
-    /// Decides which chunk columns should exist given the current player position and
-    /// render distance (singleton <see cref="ChunkStreamingConfig"/>, written by the
-    /// legacy World MonoBehaviour bridge). Creates entities for newly-needed chunks
-    /// (state Requested) and marks out-of-range loaded chunks for eviction (state
-    /// Unloading). Replaces World.cs's UpdateChunksAroundPlayer/ProcessChunkUpdates
-    /// scan (roadmap phase 2). Actual GameObject instantiation/destruction is handled
-    /// by <see cref="ChunkStreamingBridgeSystem"/>.
+    /// Decides which chunks should exist given the current player position and render
+    /// distance (singleton <see cref="ChunkStreamingConfig"/>, written by the legacy World
+    /// MonoBehaviour bridge). Creates entities for newly-needed chunks (state Requested)
+    /// and marks out-of-range loaded chunks for eviction (state Unloading). Replaces
+    /// World.cs's UpdateChunksAroundPlayer/ProcessChunkUpdates scan (roadmap phase 2).
+    /// Actual GameObject instantiation/destruction is handled by
+    /// <see cref="ChunkStreamingBridgeSystem"/>.
     /// </summary>
+    /// <remarks>
+    /// Scans X/Z by <see cref="ChunkStreamingConfig.RenderDistance"/> around the player, and Y
+    /// by a fixed <see cref="YLayerCount"/> (roadmap phase SVO sous-étape 2: chunks are now
+    /// cubic and stack vertically, but Y-streaming isn't distance-driven yet — every XZ column
+    /// in range always loads all <see cref="YLayerCount"/> vertical layers, reproducing the
+    /// pre-SVO behaviour of one full-height column, structurally decomposed into cubic chunks.
+    /// Distance-based vertical culling is deferred to a follow-up sous-étape).
+    /// </remarks>
     [UpdateInGroup(typeof(SimulationSystemGroup))]
     public partial class ChunkStreamingRequestSystem : SystemBase
     {
+        // Nombre de couches verticales chargées par colonne XZ, mirroring l'ancienne hauteur de
+        // colonne fixe (256) découpée en chunks cubiques de Chunk.Size (32) — 256/32 = 8. Ne peut
+        // pas référencer Chunk.Size directement (VoxelGame.Streaming ne peut pas référencer
+        // Assembly-CSharp, cf. roadmap phase 2), d'où la constante dupliquée avec ce commentaire.
+        private const int YLayerCount = 8;
+
         private int2Key lastPlayerChunkCoord;
         private bool hasRun;
 
@@ -60,14 +74,18 @@ namespace VoxelGame.Streaming
                 {
                     int x = config.PlayerChunkCoord.x + dx;
                     int z = config.PlayerChunkCoord.y + dz;
-                    ulong morton = MortonCode.Encode(x, 0, z);
-                    wanted.Add(morton);
 
-                    if (!existing.ContainsKey(morton))
+                    for (int y = 0; y < YLayerCount; y++)
                     {
-                        var entity = EntityManager.CreateEntity(typeof(ChunkMortonKey), typeof(ChunkLifecycle));
-                        EntityManager.SetComponentData(entity, new ChunkMortonKey { Morton = morton, Level = 0 });
-                        EntityManager.SetComponentData(entity, new ChunkLifecycle { State = ChunkLifecycleState.Requested });
+                        ulong morton = MortonCode.Encode(x, y, z);
+                        wanted.Add(morton);
+
+                        if (!existing.ContainsKey(morton))
+                        {
+                            var entity = EntityManager.CreateEntity(typeof(ChunkMortonKey), typeof(ChunkLifecycle));
+                            EntityManager.SetComponentData(entity, new ChunkMortonKey { Morton = morton, Level = 0 });
+                            EntityManager.SetComponentData(entity, new ChunkLifecycle { State = ChunkLifecycleState.Requested });
+                        }
                     }
                 }
             }

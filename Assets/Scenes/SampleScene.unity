@@ -444,7 +444,7 @@ PrefabInstance:
       objectReference: {fileID: 355658877}
     - target: {fileID: 2586474468756115820, guid: ca11eeb3129c9d446bdd16374c7f67dc, type: 3}
       propertyPath: renderDistance
-      value: 3
+      value: 6
       objectReference: {fileID: 0}
     - target: {fileID: 2586474468756115820, guid: ca11eeb3129c9d446bdd16374c7f67dc, type: 3}
       propertyPath: terrainSettings
@@ -513,7 +513,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 1520426503602412864, guid: eff5acd62af27bb4e9e867e80a58d4aa, type: 3}
       propertyPath: m_LocalPosition.y
-      value: 250
+      value: 350
       objectReference: {fileID: 0}
     - target: {fileID: 1520426503602412864, guid: eff5acd62af27bb4e9e867e80a58d4aa, type: 3}
       propertyPath: m_LocalPosition.z

@@ -1,3 +1,4 @@
+using System;
 using NUnit.Framework;
 using Unity.Collections;
 using VoxelGame.Data;
@@ -6,6 +7,71 @@ namespace VoxelGame.Data.Tests
 {
     public class VoxelOctreeTests
     {
+        [Test]
+        public void ParentThenGetChild_RoundTrips_RandomCoverage()
+        {
+            // Validé au préalable hors-Unity (harnais dotnet, 20000 cas) : un simple décalage de
+            // bits Morton (Morton >> 3 / << 3) déborde immédiatement car MortonCode.Encode ajoute
+            // le Bias à chaque coordonnée avant interleaving (bits de poids fort déjà occupés à
+            // tout niveau) — Parent()/GetChild() passent donc par un décodage/réencodage de
+            // coordonnées. Ce test couvre le même round-trip côté Unity.
+            var rng = new Random(20260715);
+            for (int i = 0; i < 5000; i++)
+            {
+                int x = rng.Next(-1000, 1000);
+                int y = rng.Next(-1000, 1000);
+                int z = rng.Next(-1000, 1000);
+                byte level = (byte)rng.Next(1, 10);
+                int childIndex = rng.Next(0, 8);
+
+                var key = OctreeNodeKey.FromCoordinates(x, y, z, level);
+                OctreeNodeKey child = key.GetChild(childIndex);
+                OctreeNodeKey backToParent = child.Parent();
+
+                Assert.AreEqual(key, backToParent, $"GetChild({childIndex}).Parent() != original pour ({x},{y},{z}) niveau {level}");
+            }
+        }
+
+        [Test]
+        public void GetChild_MatchesExpectedCoordinateOffset()
+        {
+            var rng = new Random(20260715);
+            for (int i = 0; i < 2000; i++)
+            {
+                int x = rng.Next(-500, 500);
+                int y = rng.Next(-500, 500);
+                int z = rng.Next(-500, 500);
+                byte level = (byte)rng.Next(1, 8);
+                var parent = OctreeNodeKey.FromCoordinates(x, y, z, level);
+
+                for (int c = 0; c < 8; c++)
+                {
+                    OctreeNodeKey child = parent.GetChild(c);
+                    MortonCode.Decode(child.Morton, out int cx, out int cy, out int cz);
+
+                    Assert.AreEqual(x * 2 + (c & 1), cx, $"x pour enfant {c}");
+                    Assert.AreEqual(y * 2 + ((c >> 1) & 1), cy, $"y pour enfant {c}");
+                    Assert.AreEqual(z * 2 + ((c >> 2) & 1), cz, $"z pour enfant {c}");
+                    Assert.AreEqual(level - 1, child.Level);
+                }
+            }
+        }
+
+        [Test]
+        public void GetChild_OnLeafLevel_Throws()
+        {
+            var leaf = OctreeNodeKey.FromCoordinates(0, 0, 0, level: 0);
+            Assert.Throws<InvalidOperationException>(() => leaf.GetChild(0));
+        }
+
+        [Test]
+        public void GetChild_InvalidIndex_Throws()
+        {
+            var key = OctreeNodeKey.FromCoordinates(0, 0, 0, level: 1);
+            Assert.Throws<ArgumentOutOfRangeException>(() => key.GetChild(8));
+            Assert.Throws<ArgumentOutOfRangeException>(() => key.GetChild(-1));
+        }
+
         [Test]
         public void InsertThenLookup_ReturnsSameNode()
         {

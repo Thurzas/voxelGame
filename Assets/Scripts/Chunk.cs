@@ -7,13 +7,15 @@ using VoxelGame.Data;
 public class Chunk : MonoBehaviour
 {
     // --- Constantes ---
-    public const int Width = 32;   // Taille X
-    public const int Height = 256; // Taille Y (Hauteur du monde)
-    public const int Depth = 32;   // Taille Z
+    // Chunk cubique (X=Y=Z) empilable dans les 3 axes, plutôt que l'ancienne colonne fixe
+    // 32×256×32 — roadmap phase SVO sous-étape 2 : nécessaire pour un vrai streaming 3D et des
+    // nœuds d'octree cubiques (le LOD par profondeur d'octree, sous-étape 3, suppose des nœuds
+    // de même forme sur les 3 axes).
+    public const int Size = 32;
 
     // --- Données ---
-    public Vector3Int chunkPosition; // Position du chunk dans la grille de chunks (ex: (0,0), (1,0))
-                                     // La position réelle dans le monde est chunkPosition * TailleChunk
+    public Vector3Int chunkPosition; // Position du chunk dans la grille de chunks (x, y, z).
+                                     // La position réelle dans le monde est chunkPosition * Size.
 
     // Stockage par briques (VoxelBrick, phase 1 : VoxelGame.Data) au lieu d'un tableau
     // plat unique — prérequis pour le meshing GPU/job-parallélisable et le LOD par
@@ -23,10 +25,10 @@ public class Chunk : MonoBehaviour
     // référence sa position par un code de Morton (VoxelGame.Data.MortonCode), ce qui
     // établit le même schéma d'adressage linéaire que le reste du projet.
     const int BrickSize = VoxelBrick.Size; // 16
-    const int BricksX = Width / BrickSize;   // 2
-    const int BricksY = Height / BrickSize;  // 16
-    const int BricksZ = Depth / BrickSize;   // 2
-    const int BrickCount = BricksX * BricksY * BricksZ; // 64
+    const int BricksX = Size / BrickSize;   // 2
+    const int BricksY = Size / BrickSize;   // 2
+    const int BricksZ = Size / BrickSize;   // 2
+    const int BrickCount = BricksX * BricksY * BricksZ; // 8
 
     private VoxelBrick[] bricks;
     private bool bricksBuilt;
@@ -54,15 +56,16 @@ public class Chunk : MonoBehaviour
     // ci-dessus, appliqué à VoxelBrick.CopyDenseTo/CopyFromDense.
     private Voxel[] brickReadBuffer;
 
-    static int FlatIndex(int x, int y, int z) => x + (y * Width) + (z * Width * Height);
+    static int FlatIndex(int x, int y, int z) => x + (y * Size) + (z * Size * Size);
 
-    // Plage Y (inclusive) contenant potentiellement des voxels solides dans ce chunk.
-    // Permet au meshing de sauter la grande zone d'air au-dessus du terrain (Height=256
-    // alors que le terrain dépasse rarement ~110) au lieu de parcourir les 256 niveaux à
-    // chaque fois — correctif d'une régression de perf mesurée (~150ms/chunk de meshing,
-    // cf. roadmap phase 4). Ne descend jamais en dessous de la vraie plage (sûr : au pire
-    // un peu de travail inutile, jamais de face manquante), mais ne rétrécit jamais non
-    // plus après une suppression de voxel (conservateur, pas exact).
+    // Plage Y (inclusive, LOCALE à ce chunk) contenant potentiellement des voxels solides.
+    // Permet au meshing de sauter les portions d'air du chunk (utile même à Size=32 : un
+    // chunk entièrement au-dessus du terrain ou entièrement sous terre reste courant une fois
+    // le monde streamé verticalement) au lieu de parcourir les Size niveaux à chaque fois —
+    // correctif d'une régression de perf mesurée à l'origine sur l'ancienne colonne 256 de haut
+    // (cf. roadmap phase 4), toujours utile à cette granularité. Ne descend jamais en dessous
+    // de la vraie plage (sûr : au pire un peu de travail inutile, jamais de face manquante),
+    // mais ne rétrécit jamais non plus après une suppression de voxel (conservateur, pas exact).
     private int minSolidY = int.MaxValue;
     private int maxSolidY = int.MinValue;
 
@@ -106,7 +109,7 @@ public class Chunk : MonoBehaviour
         bricksBuilt = false;
     }
 
-    // Construit les 64 briques à partir de "scratch" en une seule passe, une fois le
+    // Construit les briques à partir de "scratch" en une seule passe, une fois le
     // remplissage (terrain + décoration) terminé. Détermine l'homogénéité PENDANT la
     // lecture de scratch (tableau managé rapide) plutôt que d'allouer un NativeArray dense
     // par brique puis de le compacter après coup (l'ancienne approche relisait chaque
@@ -175,11 +178,17 @@ public class Chunk : MonoBehaviour
         bricksBuilt = true;
     }
 
-    public void Initialize(Vector3Int position, Material material) // Passé par le World Manager
+    // Passé par World.LoadChunk. Ne demande plus la heightmap elle-même (contrairement à
+    // avant) : une colonne XZ peut désormais être couverte par plusieurs chunks verticaux
+    // (roadmap phase SVO sous-étape 2), donc la heightmap est demandée UNE fois par colonne et
+    // partagée par World (RequestColumnHeightmap) plutôt que redemandée par chaque étage — sinon
+    // on multiplierait par (Size monde / Size chunk) le nombre de dispatchs GPU de bruit pour un
+    // résultat identique. World appelle OnHeightmapReady une fois la heightmap disponible.
+    public void Initialize(Vector3Int position, Material material)
     {
         this.chunkPosition = position;
-        this.transform.position = new Vector3(position.x * Width, 0, position.z * Depth); // Positionner le GameObject
-        this.name = $"Chunk ({position.x}, {position.z})";
+        this.transform.position = new Vector3(position.x * Size, position.y * Size, position.z * Size);
+        this.name = $"Chunk ({position.x}, {position.y}, {position.z})";
         this.meshRenderer.material = material; // Assigner le matériel (atlas de textures)
 
         // scratch sert de stockage rapide pendant toute la génération (terrain +
@@ -187,19 +196,13 @@ public class Chunk : MonoBehaviour
         // BuildBricksFromScratch, appelé à la fin de OnHeightmapReady).
         if (scratch == null)
         {
-            scratch = new VoxelType[Width * Height * Depth];
+            scratch = new VoxelType[Size * Size * Size];
         }
-
-        // Génération asynchrone (roadmap phase 3) : ne bloque pas le thread principal en
-        // attendant le readback GPU. La suite (remplissage de scratch, décoration,
-        // construction des briques, mesh) se poursuit dans OnHeightmapReady une fois la
-        // heightmap disponible.
-        Vector2 offset = new Vector2(position.x, position.z);
-        Noise.RequestHeightmapAsync(Width, offset, OnHeightmapReady);
     }
 
-    // Callback du readback asynchrone (peut arriver plusieurs frames après Initialize).
-    void OnHeightmapReady(float[,] heightmap)
+    // Callback (via World, cf. Initialize) une fois la heightmap partagée de la colonne
+    // disponible — peut arriver plusieurs frames après Initialize.
+    public void OnHeightmapReady(float[,] heightmap)
     {
         // Le chunk a pu être déchargé (GameObject détruit) pendant que la requête était
         // en vol : "this == null" est le test standard Unity pour un objet détruit.
@@ -283,8 +286,9 @@ public class Chunk : MonoBehaviour
                      if (y > maxSolidY) maxSolidY = y;
                  }
 
-                 // OPTIMISATION: Si le bloc est à la frontière (x=0, x=Width-1, z=0, z=Depth-1)
-                 // il faut aussi notifier le chunk voisin de potentiellement mettre à jour son mesh.
+                 // OPTIMISATION: Si le bloc est à la frontière (x=0, x=Size-1, y=0, y=Size-1,
+                 // z=0, z=Size-1) il faut aussi notifier le chunk voisin de potentiellement
+                 // mettre à jour son mesh.
                  CheckNeighborChunksForUpdate(x, y, z);
             }
         }
@@ -297,24 +301,24 @@ public class Chunk : MonoBehaviour
     // Vérifie si les coordonnées sont dans les limites du chunk
     public static bool IsVoxelInChunk(int x, int y, int z)
     {
-        return x >= 0 && x < Width && y >= 0 && y < Height && z >= 0 && z < Depth;
+        return x >= 0 && x < Size && y >= 0 && y < Size && z >= 0 && z < Size;
     }
 
     // Convertit les coordonnées locales du chunk en coordonnées mondiales
     public Vector3Int GetWorldPosition(int x, int y, int z) {
         return new Vector3Int(
-            x + chunkPosition.x * Width,
-            y, // Y n'est pas affecté par chunkPosition.y qui est souvent 0
-            z + chunkPosition.z * Depth
+            x + chunkPosition.x * Size,
+            y + chunkPosition.y * Size,
+            z + chunkPosition.z * Size
         );
     }
 
      // Convertit les coordonnées mondiales en coordonnées locales du chunk
     public Vector3Int GetLocalPosition(Vector3Int worldPos) {
         return new Vector3Int(
-            worldPos.x - chunkPosition.x * Width,
-            worldPos.y,
-            worldPos.z - chunkPosition.z * Depth
+            worldPos.x - chunkPosition.x * Size,
+            worldPos.y - chunkPosition.y * Size,
+            worldPos.z - chunkPosition.z * Size
         );
     }
 
@@ -338,73 +342,77 @@ public class Chunk : MonoBehaviour
         minSolidY = int.MaxValue;
         maxSolidY = int.MinValue;
 
+        int chunkWorldY0 = chunkPosition.y * Size;
+        // groundHeight est en coordonnées MONDE (fonction pure de la heightmap, indépendante
+        // du chunk vertical qui traite cette colonne) — conservé ici pour être réutilisé tel
+        // quel par la boucle de décoration ci-dessous, sans le redériver ni scanner les voxels
+        // (cf. l'ancien GetSurfaceY, supprimé : il ne pouvait de toute façon donner un résultat
+        // correct que dans LE chunk vertical contenant réellement la surface).
+        int[,] groundHeights = new int[Size, Size];
+
         // --- Génération du terrain de base ---
-        for (int x = 0; x < Width; x++)
+        for (int x = 0; x < Size; x++)
         {
-            for (int z = 0; z < Depth; z++)
+            for (int z = 0; z < Size; z++)
             {
                 float heightValue = heightmap[x, z];
                 int groundHeight = Mathf.FloorToInt(settings.baseHeight + (heightValue - 0.5f) * settings.heightMultiplier);
-                // Le terrain remplit toujours de y=0 jusqu'à groundHeight (voir boucle
-                // ci-dessous) : si groundHeight >= 0, minSolidY reste 0.
-                int clampedGroundHeight = Mathf.Min(groundHeight, Height - 1);
-                if (clampedGroundHeight >= 0)
-                {
-                    if (minSolidY > 0) minSolidY = 0;
-                    if (clampedGroundHeight > maxSolidY) maxSolidY = clampedGroundHeight;
-                }
+                groundHeights[x, z] = groundHeight;
+
                 // Écrit directement dans scratch (tableau plat rapide) : les briques
                 // n'existent pas encore à ce stade (construites après coup en une passe,
-                // cf. BuildBricksFromScratch) — évite 262144 écritures NativeArray
-                // individuelles pendant le remplissage initial (régression mesurée en jeu,
-                // cf. roadmap phase 4).
+                // cf. BuildBricksFromScratch) — évite des écritures NativeArray individuelles
+                // pendant le remplissage initial (régression mesurée en jeu, cf. roadmap
+                // phase 4).
                 int idx = FlatIndex(x, 0, z);
-                for (int y = 0; y < Height; y++, idx += Width)
+                for (int localY = 0; localY < Size; localY++, idx += Size)
                 {
-                    if (y < groundHeight - 3)
-                        scratch[idx] = VoxelType.Stone;
-                    else if (y < groundHeight)
-                        scratch[idx] = VoxelType.Dirt;
-                    else if (y == groundHeight)
-                        scratch[idx] = VoxelType.Grass;
+                    int worldY = chunkWorldY0 + localY;
+                    VoxelType type;
+                    if (worldY < groundHeight - 3)
+                        type = VoxelType.Stone;
+                    else if (worldY < groundHeight)
+                        type = VoxelType.Dirt;
+                    else if (worldY == groundHeight)
+                        type = VoxelType.Grass;
                     else
-                        scratch[idx] = VoxelType.Air;
+                        type = VoxelType.Air;
+
+                    scratch[idx] = type;
+                    if (type != VoxelType.Air)
+                    {
+                        if (localY < minSolidY) minSolidY = localY;
+                        if (localY > maxSolidY) maxSolidY = localY;
+                    }
                 }
             }
         }
 
         // --- Génération déterministe des décorations (arbres) ---
+        // Le hash/la décision "y a-t-il un arbre ici" ne dépendent que de (worldX, worldZ,
+        // worldSeed) — identiques quel que soit le chunk vertical qui traite cette colonne, donc
+        // chaque étage retombe sur le même résultat. Seul WriteVoxelIfInChunk décide au final
+        // quels voxels de l'arbre tombent dans LA plage Y locale de CE chunk (même logique de
+        // troncature déjà utilisée pour les frontières X/Z, désormais étendue à Y).
         int worldSeed = World.Instance.worldSeed;
-        for (int x = 0; x < Width; x++)
+        for (int x = 0; x < Size; x++)
         {
-            for (int z = 0; z < Depth; z++)
+            for (int z = 0; z < Size; z++)
             {
-                int worldX = chunkPosition.x * Width + x;
-                int worldZ = chunkPosition.z * Depth + z;
+                int worldX = chunkPosition.x * Size + x;
+                int worldZ = chunkPosition.z * Size + z;
                 int hash = worldX * 73856093 ^ worldZ * 19349663 ^ worldSeed;
                 Random.InitState(hash);
                 if (Random.value < 0.05f) // 5% de chance de générer un arbre
                 {
-                    int groundY = GetSurfaceY(x, z);
-                    PlaceTree(worldX, groundY, worldZ);
+                    PlaceTree(worldX, groundHeights[x, z], worldZ);
                 }
             }
         }
     }
 
-    // Retourne la hauteur du sol pour (x, z) local au chunk. Appelée pendant la
-    // génération (avant que les briques n'existent) : lit scratch directement.
-    int GetSurfaceY(int x, int z)
-    {
-        for (int y = Height - 1; y >= 0; y--)
-        {
-            if (scratch[FlatIndex(x, y, z)] != VoxelType.Air)
-                return y + 1;
-        }
-        return 1;
-    }
-
-    // Place un arbre déterministe, en écrivant uniquement dans le chunk courant
+    // Place un arbre déterministe (y = coordonnée MONDE de la base), en écrivant uniquement
+    // les voxels qui tombent dans le chunk courant (X, Y et Z).
     void PlaceTree(int worldX, int y, int worldZ)
     {
         int treeHeight = 5;
@@ -421,24 +429,25 @@ public class Chunk : MonoBehaviour
         }
     }
 
-    // N'écrit que si la position est dans le chunk courant
+    // N'écrit que si la position (coordonnées MONDE) est dans le chunk courant
     void WriteVoxelIfInChunk(int wx, int y, int wz, VoxelType type)
     {
-        int localX = wx - chunkPosition.x * Width;
-        int localZ = wz - chunkPosition.z * Depth;
-        if (localX >= 0 && localX < Width && localZ >= 0 && localZ < Depth && y >= 0 && y < Height)
+        int localX = wx - chunkPosition.x * Size;
+        int localY = y - chunkPosition.y * Size;
+        int localZ = wz - chunkPosition.z * Size;
+        if (localX >= 0 && localX < Size && localY >= 0 && localY < Size && localZ >= 0 && localZ < Size)
         {
             // Appelé pendant la génération initiale (avant BuildBricksFromScratch) :
             // écrit directement dans scratch.
-            scratch[FlatIndex(localX, y, localZ)] = type;
+            scratch[FlatIndex(localX, localY, localZ)] = type;
 
             // Étend les bornes Y ici aussi (n'écrit pas via SetVoxel), sinon une partie
             // d'arbre au-dessus de maxSolidY serait coupée par le bornage du meshing
             // (cf. minSolidY/maxSolidY).
             if (type != VoxelType.Air)
             {
-                if (y < minSolidY) minSolidY = y;
-                if (y > maxSolidY) maxSolidY = y;
+                if (localY < minSolidY) minSolidY = localY;
+                if (localY > maxSolidY) maxSolidY = localY;
             }
         }
     }
@@ -447,18 +456,21 @@ public class Chunk : MonoBehaviour
     {
         if (World.Instance == null) return; // S'assurer que le monde existe
 
-        // Si à la limite X=0, notifier le chunk voisin en (-1, 0)
+        // Si à la limite X=0, notifier le chunk voisin en -X
         if (x == 0) World.Instance.GetChunk(chunkPosition + Vector3Int.left)?.MarkForMeshUpdate();
-        // Si à la limite X=Width-1, notifier le chunk voisin en (+1, 0)
-        else if (x == Width - 1) World.Instance.GetChunk(chunkPosition + Vector3Int.right)?.MarkForMeshUpdate();
+        // Si à la limite X=Size-1, notifier le chunk voisin en +X
+        else if (x == Size - 1) World.Instance.GetChunk(chunkPosition + Vector3Int.right)?.MarkForMeshUpdate();
 
-        // Si à la limite Z=0, notifier le chunk voisin en (0, -1)
+        // Si à la limite Z=0, notifier le chunk voisin en -Z
         if (z == 0) World.Instance.GetChunk(chunkPosition + new Vector3Int(0,0,-1))?.MarkForMeshUpdate();
-        // Si à la limite Z=Depth-1, notifier le chunk voisin en (0, +1)
-        else if (z == Depth - 1) World.Instance.GetChunk(chunkPosition + new Vector3Int(0,0,1))?.MarkForMeshUpdate();
+        // Si à la limite Z=Size-1, notifier le chunk voisin en +Z
+        else if (z == Size - 1) World.Instance.GetChunk(chunkPosition + new Vector3Int(0,0,1))?.MarkForMeshUpdate();
 
-        // Pas besoin de vérifier Y car les chunks sont typiquement empilés verticalement dans le même GameObject ou gérés différemment.
-        // Si vous avez des chunks empilés (ex: 16x16x16), il faudrait vérifier Y aussi.
+        // Si à la limite Y=0, notifier le chunk voisin en -Y ; idem Y=Size-1 en +Y — les chunks
+        // sont désormais cubiques et empilables verticalement (roadmap phase SVO sous-étape 2),
+        // ce cas n'était plus à ignorer.
+        if (y == 0) World.Instance.GetChunk(chunkPosition + new Vector3Int(0,-1,0))?.MarkForMeshUpdate();
+        else if (y == Size - 1) World.Instance.GetChunk(chunkPosition + new Vector3Int(0,1,0))?.MarkForMeshUpdate();
     }
 
      public void MarkForMeshUpdate() {
@@ -478,9 +490,9 @@ public class Chunk : MonoBehaviour
         GenerateMeshGpu();
     }
 
-    // Buffer aplati et paddé (1 voxel de bordure sur X/Z, aucun sur Y) envoyé au compute
-    // shader ; réutilisé d'un remaillage à l'autre pour éviter une réallocation à chaque
-    // frame où un chunk change.
+    // Buffer aplati et paddé (1 voxel de bordure sur les 3 axes, cf. VoxelFaceCulling.compute)
+    // envoyé au compute shader ; réutilisé d'un remaillage à l'autre pour éviter une
+    // réallocation à chaque frame où un chunk change.
     private uint[] gpuPaddedBuffer;
 
     void GenerateMeshGpu()
@@ -496,29 +508,31 @@ public class Chunk : MonoBehaviour
         // que GenerateMeshGreedy.
         MaterializeScratch();
 
-        int loY = Mathf.Clamp(minSolidY - 1, 0, Height - 1);
-        int hiYExclusive = Mathf.Clamp(maxSolidY + 2, 0, Height);
+        int loY = Mathf.Clamp(minSolidY - 1, 0, Size - 1);
+        int hiYExclusive = Mathf.Clamp(maxSolidY + 2, 0, Size);
         int innerHeight = hiYExclusive - loY;
 
-        int paddedWidth = Width + 2;
-        int paddedDepth = Depth + 2;
-        int paddedLength = paddedWidth * innerHeight * paddedDepth;
+        int paddedWidth = Size + 2;
+        int paddedDepth = Size + 2;
+        int paddedHeightStride = innerHeight + 2; // padding réel sur Y désormais (voisin vertical possible)
+        int paddedLength = paddedWidth * paddedHeightStride * paddedDepth;
 
         if (gpuPaddedBuffer == null || gpuPaddedBuffer.Length < paddedLength)
         {
             gpuPaddedBuffer = new uint[paddedLength];
         }
 
-        // Intérieur : copie en bloc depuis scratch (une ligne X à la fois).
-        for (int pz = 1; pz <= Depth; pz++)
+        // Intérieur : copie en bloc depuis scratch (une ligne X à la fois). py décalé de +1
+        // (padding Y, comme px/pz le sont déjà de +1 pour le padding X/Z).
+        for (int pz = 1; pz <= Size; pz++)
         {
             int z = pz - 1;
-            for (int py = 0; py < innerHeight; py++)
+            for (int py = 1; py <= innerHeight; py++)
             {
-                int y = py + loY;
+                int y = (py - 1) + loY;
                 int scratchRowBase = FlatIndex(0, y, z);
-                int paddedRowBase = 1 + (py * paddedWidth) + (pz * paddedWidth * innerHeight);
-                for (int px = 0; px < Width; px++)
+                int paddedRowBase = 1 + (py * paddedWidth) + (pz * paddedWidth * paddedHeightStride);
+                for (int px = 0; px < Size; px++)
                 {
                     gpuPaddedBuffer[paddedRowBase + px] = (uint)scratch[scratchRowBase + px];
                 }
@@ -527,15 +541,15 @@ public class Chunk : MonoBehaviour
 
         // Bordures X (px=0 et px=paddedWidth-1) : seule la solidité importe (jamais utilisées
         // comme "self", cf. VoxelFaceCulling.compute), interrogée via le voisin/World.
-        for (int pz = 1; pz <= Depth; pz++)
+        for (int pz = 1; pz <= Size; pz++)
         {
             int z = pz - 1;
-            for (int py = 0; py < innerHeight; py++)
+            for (int py = 1; py <= innerHeight; py++)
             {
-                int y = py + loY;
+                int y = (py - 1) + loY;
                 bool solidLeft = GetVoxelInfoFast(-1, y, z, out _);
-                bool solidRight = GetVoxelInfoFast(Width, y, z, out _);
-                int rowBase = (py * paddedWidth) + (pz * paddedWidth * innerHeight);
+                bool solidRight = GetVoxelInfoFast(Size, y, z, out _);
+                int rowBase = (py * paddedWidth) + (pz * paddedWidth * paddedHeightStride);
                 gpuPaddedBuffer[rowBase] = solidLeft ? 1u : 0u;
                 gpuPaddedBuffer[rowBase + paddedWidth - 1] = solidRight ? 1u : 0u;
             }
@@ -546,20 +560,39 @@ public class Chunk : MonoBehaviour
         for (int px = 0; px < paddedWidth; px++)
         {
             int x = px - 1;
-            for (int py = 0; py < innerHeight; py++)
+            for (int py = 1; py <= innerHeight; py++)
             {
-                int y = py + loY;
+                int y = (py - 1) + loY;
                 bool solidFront = GetVoxelInfoFast(x, y, -1, out _);
-                bool solidBack = GetVoxelInfoFast(x, y, Depth, out _);
+                bool solidBack = GetVoxelInfoFast(x, y, Size, out _);
                 int frontBase = px + (py * paddedWidth);
-                int backBase = px + (py * paddedWidth) + ((paddedDepth - 1) * paddedWidth * innerHeight);
+                int backBase = px + (py * paddedWidth) + ((paddedDepth - 1) * paddedWidth * paddedHeightStride);
                 gpuPaddedBuffer[frontBase] = solidFront ? 1u : 0u;
                 gpuPaddedBuffer[backBase] = solidBack ? 1u : 0u;
             }
         }
 
+        // Bordures Y (py=0 et py=paddedHeightStride-1) : voisin vertical (chunk au-dessus/en
+        // dessous) si loY/hiYExclusive atteignent le vrai bord du chunk, sinon toujours de
+        // l'air garanti par construction (cf. minSolidY/maxSolidY) — GetVoxelInfoFast gère les
+        // deux cas uniformément, exactement comme pour X/Z.
+        for (int pz = 0; pz < paddedDepth; pz++)
+        {
+            int z = pz - 1;
+            for (int px = 0; px < paddedWidth; px++)
+            {
+                int x = px - 1;
+                bool solidBelow = GetVoxelInfoFast(x, loY - 1, z, out _);
+                bool solidAbove = GetVoxelInfoFast(x, hiYExclusive, z, out _);
+                int belowBase = px + (0 * paddedWidth) + (pz * paddedWidth * paddedHeightStride);
+                int aboveBase = px + ((paddedHeightStride - 1) * paddedWidth) + (pz * paddedWidth * paddedHeightStride);
+                gpuPaddedBuffer[belowBase] = solidBelow ? 1u : 0u;
+                gpuPaddedBuffer[aboveBase] = solidAbove ? 1u : 0u;
+            }
+        }
+
         int capturedLoY = loY;
-        VoxelMesherGpu.RequestFaces(gpuPaddedBuffer, paddedLength, Width, innerHeight, Depth, paddedWidth, innerHeight, capturedLoY, OnGpuFacesReady);
+        VoxelMesherGpu.RequestFaces(gpuPaddedBuffer, paddedLength, Size, innerHeight, Size, paddedWidth, paddedHeightStride, capturedLoY, OnGpuFacesReady);
     }
 
     // Callback du readback GPU (peut arriver plusieurs frames après GenerateMeshGpu).
@@ -612,6 +645,11 @@ public class Chunk : MonoBehaviour
     // (pas de tiling répété) — un étirement de texture est donc possible sur de grandes
     // zones. Correction (UV wrap/triplanaire) laissée pour un polish ultérieur, la
     // priorité de cette phase étant la réduction du nombre de triangles.
+    //
+    // Non appelée depuis le passage au meshing GPU (cf. GenerateMeshWithShader) ; conservée
+    // comme référence/repli. Fonctionne nativement avec des chunks cubiques empilables : tous
+    // les axes (y compris Y) délèguent déjà au World via GetVoxelInfoFast pour les positions
+    // hors chunk, donc les voisins verticaux sont gérés sans changement de cette méthode.
     void GenerateMeshGreedy()
     {
         var vertices = new System.Collections.Generic.List<Vector3>();
@@ -626,17 +664,11 @@ public class Chunk : MonoBehaviour
             return;
         }
 
-        // Seul l'axe Y est borné : le terrain remplit Height=256 niveaux mais le contenu
-        // solide dépasse rarement ~110 (cf. minSolidY/maxSolidY) — parcourir les 256
-        // niveaux à chaque fois coûtait ~150ms/chunk mesuré en jeu (régression, cf.
-        // roadmap phase 4). X/Z restent pleine plage (déjà petits = 32). Validé hors-Unity
-        // avant portage (304 grilles bornées, dont un auto-test qu'une borne trop stricte
-        // donne bien un résultat FAUX, pour confirmer que le test discrimine vraiment).
-        int loY = Mathf.Clamp(minSolidY - 1, 0, Height - 1);
-        int hiYExclusive = Mathf.Clamp(maxSolidY + 2, 0, Height);
+        int loY = Mathf.Clamp(minSolidY - 1, 0, Size - 1);
+        int hiYExclusive = Mathf.Clamp(maxSolidY + 2, 0, Size);
 
         int[] loBound = { 0, loY, 0 };
-        int[] hiBoundExcl = { Width, hiYExclusive, Depth };
+        int[] hiBoundExcl = { Size, hiYExclusive, Size };
 
         MaterializeScratch();
 
@@ -781,7 +813,7 @@ public class Chunk : MonoBehaviour
     {
         if (scratch == null)
         {
-            scratch = new VoxelType[Width * Height * Depth];
+            scratch = new VoxelType[Size * Size * Size];
         }
         if (brickReadBuffer == null)
         {
@@ -836,8 +868,8 @@ public class Chunk : MonoBehaviour
     }
 
     // Lit depuis "scratch" (rapide, pas de vérification par accès) pour les positions dans
-    // ce chunk ; délègue au World pour les positions hors chunk (bord X/Z uniquement, Y n'a
-    // pas de chunk voisin).
+    // ce chunk ; délègue au World pour les positions hors chunk (X, Y ou Z — les chunks sont
+    // désormais cubiques et empilables dans les 3 axes, roadmap phase SVO sous-étape 2).
     bool GetVoxelInfoFast(int x, int y, int z, out bool inChunk)
     {
         if (IsVoxelInChunk(x, y, z))
@@ -948,13 +980,13 @@ public class Chunk : MonoBehaviour
     Rect VoxelTypeToTexture(VoxelType type, Vector3 normal)
     {
         var props = VoxelProperties.Instance.GetPropertiesForType(type);
-        
+
         // Configuration pour un atlas 256x256 avec des tiles 16x16
         const int ATLAS_SIZE = 256;
         const int TILE_SIZE = 16;
         const int TILES_PER_ROW = ATLAS_SIZE / TILE_SIZE; // = 16
         const float UV_TILE_SIZE = 1f / TILES_PER_ROW;    // = 0.0625f
-        
+
         Vector2Int coords;
         if (normal == Vector3.up)
             coords = props.topTextureCoords;

@@ -4,10 +4,11 @@ using Unity.Mathematics;
 namespace VoxelGame.Streaming
 {
     /// <summary>
-    /// Identifies a chunk entity by the Morton code of its column (x, 0, z) plus an
-    /// octree level. Level is fixed at 0 during the phase-2 bridge (chunks are still
-    /// full-height columns, mirroring the legacy World.cs); it becomes meaningful once
-    /// real octree subdivision lands (roadmap phases 4-5).
+    /// Identifies a chunk entity by the Morton code of its (x, y, z) cubic chunk
+    /// coordinate plus an octree level. Level is fixed at 0 during the phase-2 bridge
+    /// (each entity is a single leaf-granularity chunk, not an octree summary node); it
+    /// becomes meaningful once real octree subdivision/LOD lands (roadmap phase SVO
+    /// sous-étape 3).
     /// </summary>
     public struct ChunkMortonKey : IComponentData
     {

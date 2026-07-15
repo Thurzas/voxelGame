@@ -1,11 +1,12 @@
 #pragma kernel CullFaces
 
-// Buffer aplati avec un padding de 1 voxel sur X et Z (pas sur Y : les chunks ne
-// s'empilent pas verticalement, cf. Chunk.cs). PaddedIndex(px,py,pz) =
-// px + py*PaddedWidth + pz*PaddedWidth*PaddedHeightStride. px=0 et px=PaddedWidth-1
-// sont la bordure gauche/droite (voisin de chunk, ou air si non chargé) ; idem pz pour
-// Z. Les voxels intérieurs (dont ce chunk est propriétaire) sont à px=1..InnerWidth,
-// pz=1..InnerDepth. py va de 0 à InnerHeight-1 et correspond au monde à py+LoY.
+// Buffer aplati avec un padding de 1 voxel sur les 3 axes (X, Y et Z : depuis le passage aux
+// chunks cubiques empilables verticalement, roadmap phase SVO sous-étape 2, un voisin peut
+// exister sur Y aussi, pas seulement X/Z). PaddedIndex(px,py,pz) =
+// px + py*PaddedWidth + pz*PaddedWidth*PaddedHeightStride. px=0 et px=PaddedWidth-1 sont la
+// bordure gauche/droite (voisin de chunk, ou air si non chargé) ; idem pz pour Z, py=0 et
+// py=PaddedHeightStride-1 pour Y. Les voxels intérieurs (dont ce chunk est propriétaire) sont à
+// px=1..InnerWidth, py=1..InnerHeight, pz=1..InnerDepth.
 StructuredBuffer<uint> Voxels;
 
 // Une face exposée : (x, y, z, packed) en coordonnées locales du chunk (Y déjà "réel",
@@ -18,24 +19,13 @@ uint InnerWidth;
 uint InnerHeight;
 uint InnerDepth;
 uint PaddedWidth;        // InnerWidth + 2
-uint PaddedHeightStride; // stride utilisé pour l'indexation Y (>= InnerHeight)
+uint PaddedHeightStride; // InnerHeight + 2 (padding réel sur Y désormais, voir en-tête)
 int LoY;
 
 uint VoxelAtPadded(int px, int py, int pz)
 {
     uint idx = (uint)px + ((uint)py * PaddedWidth) + ((uint)pz * PaddedWidth * PaddedHeightStride);
     return Voxels[idx];
-}
-
-// Renvoie 0 (air) si py est hors [0, InnerHeight) : pas de bordure Y stockée, cf.
-// World.IsVoxelSolid qui traite tout Y hors chunk comme de l'air.
-uint NeighborType(int px, int py, int pz)
-{
-    if (py < 0 || py >= (int) InnerHeight)
-    {
-        return 0;
-    }
-    return VoxelAtPadded(px, py, pz);
 }
 
 [numthreads(4, 4, 4)]
@@ -47,7 +37,7 @@ void CullFaces(uint3 id : SV_DispatchThreadID)
     }
 
     int px = (int) id.x + 1;
-    int py = (int) id.y;
+    int py = (int) id.y + 1;
     int pz = (int) id.z + 1;
 
     uint self = VoxelAtPadded(px, py, pz);
@@ -67,7 +57,7 @@ void CullFaces(uint3 id : SV_DispatchThreadID)
     for (int dir = 0; dir < 6; dir++)
     {
         int3 o = offsets[dir];
-        uint neighbor = NeighborType(px + o.x, py + o.y, pz + o.z);
+        uint neighbor = VoxelAtPadded(px + o.x, py + o.y, pz + o.z);
         if (neighbor == 0)
         {
             uint4 face;

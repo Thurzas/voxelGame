@@ -18,15 +18,15 @@ public class TerrainDecoration
 
     public void DecorateChunk(Chunk chunk)
     {
-        int chunkArea = Chunk.Width * Chunk.Depth;
+        int chunkArea = Chunk.Size * Chunk.Size;
         int treesToPlace = Mathf.FloorToInt(chunkArea * TREES_PER_CHUNK_DENSITY);
 
         for (int i = 0; i < treesToPlace; i++)
         {
-            int localX = random.Next(0, Chunk.Width);
-            int localZ = random.Next(0, Chunk.Depth);
+            int localX = random.Next(0, Chunk.Size);
+            int localZ = random.Next(0, Chunk.Size);
 
-            for (int y = Chunk.Height - 1; y >= 0; y--)
+            for (int y = Chunk.Size - 1; y >= 0; y--)
             {
                 var voxel = chunk.GetVoxel(localX, y, localZ);
                 if (voxel.type == VoxelType.Grass)

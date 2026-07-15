@@ -111,7 +111,16 @@ public class PlayerInteraction : MonoBehaviour
             Vector3 pointInBlock = hit.point - hit.normal * 0.01f;
             Vector3Int blockPos = Vector3Int.FloorToInt(pointInBlock);
 
+            // DIAG temporaire (roadmap phase SVO sous-étape 2) : casser/placer signalé cassé par
+            // l'utilisateur après le passage aux chunks cubiques 3D — à retirer une fois la cause
+            // confirmée.
+            Debug.Log($"[DIAG TryBreakBlock] raycast hit {hit.collider?.name} @ {hit.point}, blockPos={blockPos}");
+
             World.Instance?.SetVoxel(blockPos, VoxelType.Air); // Demander au monde de supprimer le bloc
+        }
+        else
+        {
+            Debug.Log("[DIAG TryBreakBlock] raycast n'a rien touché");
         }
     }
 

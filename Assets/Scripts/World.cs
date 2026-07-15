@@ -27,11 +27,76 @@ public class World : MonoBehaviour
     // La décision de quels chunks doivent être chargés/déchargés est pilotée par
     // VoxelGame.Streaming.ChunkStreamingRequestSystem (roadmap phase 2). World reste le
     // pont temporaire : il instancie/détruit encore les GameObjects Chunk et gère leur
-    // mise à jour de mesh.
-    public Dictionary<Vector2Int, Chunk> activeChunks = new Dictionary<Vector2Int, Chunk>();
+    // mise à jour de mesh. Clé 3D depuis le passage aux chunks cubiques empilables
+    // verticalement (roadmap phase SVO sous-étape 2) — auparavant Y était toujours 0.
+    public Dictionary<Vector3Int, Chunk> activeChunks = new Dictionary<Vector3Int, Chunk>();
     private Transform playerTransform; // Pour savoir où charger/décharger les chunks
 
     private Vector2Int lastPlayerChunkCoord;
+
+    // Une colonne XZ peut désormais être couverte par plusieurs chunks verticaux (roadmap phase
+    // SVO sous-étape 2) : la heightmap (fonction pure de X/Z, indépendante de Y) est demandée
+    // UNE fois par colonne et partagée entre eux plutôt que redemandée par étage — sinon on
+    // multiplierait par le nombre de couches verticales le nombre de dispatchs GPU de bruit
+    // pour un résultat identique.
+    private class ColumnHeightmapState
+    {
+        public bool Ready;
+        public float[,] Heightmap;
+        public int RefCount;
+        public List<System.Action<float[,]>> Pending = new List<System.Action<float[,]>>();
+    }
+    private readonly Dictionary<Vector2Int, ColumnHeightmapState> columnHeightmaps = new Dictionary<Vector2Int, ColumnHeightmapState>();
+
+    // Incrémente le compteur de référence de la colonne (xz.x, xz.y) et invoque onReady dès que
+    // sa heightmap est disponible (immédiatement si déjà en cache). Doit être appairé avec
+    // ReleaseColumnHeightmap une fois pour chaque appel (cf. LoadChunk/UnloadChunk).
+    private void RequestColumnHeightmap(Vector2Int xz, System.Action<float[,]> onReady)
+    {
+        if (!columnHeightmaps.TryGetValue(xz, out ColumnHeightmapState state))
+        {
+            state = new ColumnHeightmapState();
+            columnHeightmaps.Add(xz, state);
+
+            Vector2 offset = new Vector2(xz.x, xz.y);
+            Noise.RequestHeightmapAsync(Chunk.Size, offset, heightmap =>
+            {
+                state.Ready = true;
+                state.Heightmap = heightmap;
+                var pending = state.Pending;
+                state.Pending = new List<System.Action<float[,]>>();
+                for (int i = 0; i < pending.Count; i++)
+                {
+                    pending[i](heightmap);
+                }
+            });
+        }
+
+        state.RefCount++;
+
+        if (state.Ready)
+        {
+            onReady(state.Heightmap);
+        }
+        else
+        {
+            state.Pending.Add(onReady);
+        }
+    }
+
+    private void ReleaseColumnHeightmap(Vector2Int xz)
+    {
+        if (!columnHeightmaps.TryGetValue(xz, out ColumnHeightmapState state))
+        {
+            return;
+        }
+
+        state.RefCount--;
+        if (state.RefCount <= 0)
+        {
+            columnHeightmaps.Remove(xz);
+        }
+    }
 
     void Awake()
     {
@@ -67,7 +132,8 @@ public class World : MonoBehaviour
         if (player != null)
         {
             playerTransform = player.transform;
-            lastPlayerChunkCoord = GetChunkCoordsFromWorldPos(playerTransform.position);
+            Vector3Int coord3D = GetChunkCoordsFromWorldPos(playerTransform.position);
+            lastPlayerChunkCoord = new Vector2Int(coord3D.x, coord3D.z);
             PushStreamingConfig(lastPlayerChunkCoord);
         }
         else
@@ -85,8 +151,10 @@ public class World : MonoBehaviour
 
         if (playerTransform == null) return;
 
-        // Obtenir les coordonnées du chunk où se trouve le joueur
-        Vector2Int currentPlayerChunkCoord = GetChunkCoordsFromWorldPos(playerTransform.position);
+        // Obtenir les coordonnées du chunk où se trouve le joueur (XZ : la décision de streaming
+        // reste pilotée en XZ pour cette sous-étape, cf. ChunkStreamingRequestSystem).
+        Vector3Int playerChunkCoord3D = GetChunkCoordsFromWorldPos(playerTransform.position);
+        Vector2Int currentPlayerChunkCoord = new Vector2Int(playerChunkCoord3D.x, playerChunkCoord3D.z);
 
         // Si le joueur a changé de chunk, notifier VoxelGame.Streaming.ChunkStreamingRequestSystem
         // (c'est lui qui décide désormais quels chunks charger/décharger, cf. roadmap phase 2).
@@ -127,15 +195,18 @@ public class World : MonoBehaviour
     }
 
     // Appelé par VoxelGame.Streaming.ChunkStreamingBridgeSystem (roadmap phase 2) pour les
-    // entités passées à l'état Requested.
-    public void LoadChunk(Vector2Int coords) {
+    // entités passées à l'état Requested. coords est désormais une vraie position 3D
+    // (roadmap phase SVO sous-étape 2 : chunks cubiques empilables verticalement).
+    public void LoadChunk(Vector3Int coords) {
          if (!activeChunks.ContainsKey(coords)) {
              GameObject newChunkObject = Instantiate(chunkPrefab, Vector3.zero, Quaternion.identity, this.transform); // Parenté au World
              Chunk newChunk = newChunkObject.GetComponent<Chunk>();
              if (newChunk != null) {
-                 Vector3Int chunkPos3D = new Vector3Int(coords.x, 0, coords.y); // Y=0 pour la position du chunk
-                 newChunk.Initialize(chunkPos3D, worldMaterial);
+                 newChunk.Initialize(coords, worldMaterial);
                  activeChunks.Add(coords, newChunk);
+
+                 var xz = new Vector2Int(coords.x, coords.z);
+                 RequestColumnHeightmap(xz, heightmap => newChunk.OnHeightmapReady(heightmap));
              } else {
                  Debug.LogError($"Le prefab de Chunk n'a pas de script Chunk attaché !");
                  Destroy(newChunkObject);
@@ -145,49 +216,49 @@ public class World : MonoBehaviour
 
     // Appelé par VoxelGame.Streaming.ChunkStreamingBridgeSystem (roadmap phase 2) pour les
     // entités passées à l'état Unloading.
-    public void UnloadChunk(Vector2Int coords) {
+    public void UnloadChunk(Vector3Int coords) {
         if (activeChunks.TryGetValue(coords, out Chunk chunk)) {
             Destroy(chunk.gameObject);
             activeChunks.Remove(coords);
+            ReleaseColumnHeightmap(new Vector2Int(coords.x, coords.z));
         }
     }
 
     // --- Accès aux Voxels (méthodes helper) ---
 
     public Chunk GetChunk(Vector3Int chunkPosition) {
-        Vector2Int coords = new Vector2Int(chunkPosition.x, chunkPosition.z);
-         activeChunks.TryGetValue(coords, out Chunk chunk);
+         activeChunks.TryGetValue(chunkPosition, out Chunk chunk);
          return chunk;
     }
 
     public Chunk GetChunkFromWorldPosition(Vector3 worldPos)
     {
-        Vector2Int chunkCoord = GetChunkCoordsFromWorldPos(worldPos);
+        Vector3Int chunkCoord = GetChunkCoordsFromWorldPos(worldPos);
         activeChunks.TryGetValue(chunkCoord, out Chunk chunk);
         return chunk;
     }
 
-    public Vector2Int GetChunkCoordsFromWorldPos(Vector3 worldPos)
+    public Vector3Int GetChunkCoordsFromWorldPos(Vector3 worldPos)
     {
-        // Convertir la position monde en coordonnées de chunk
-        int chunkX = Mathf.FloorToInt(worldPos.x / Chunk.Width);
-        int chunkZ = Mathf.FloorToInt(worldPos.z / Chunk.Depth);
-        return new Vector2Int(chunkX, chunkZ);
+        // Convertir la position monde en coordonnées de chunk (X, Y et Z : chunks cubiques
+        // empilables, roadmap phase SVO sous-étape 2).
+        int chunkX = Mathf.FloorToInt(worldPos.x / Chunk.Size);
+        int chunkY = Mathf.FloorToInt(worldPos.y / Chunk.Size);
+        int chunkZ = Mathf.FloorToInt(worldPos.z / Chunk.Size);
+        return new Vector3Int(chunkX, chunkY, chunkZ);
     }
 
     public Voxel GetVoxel(Vector3Int worldPos)
     {
-        if(worldPos.y < 0 || worldPos.y >= Chunk.Height) return new Voxel(VoxelType.Air); // Hors limites verticales
-
         Chunk chunk = GetChunkFromWorldPosition(worldPos);
         if (chunk != null)
         {
             Vector3Int localPos = chunk.GetLocalPosition(worldPos);
             return chunk.GetVoxel(localPos.x, localPos.y, localPos.z); // Le GetVoxel du chunk gère déjà les limites internes
         }
-        // Si le chunk n'est pas chargé, considérer comme Air (ou Stone sous une certaine hauteur?)
-        // return new Voxel(worldPos.y < 60 ? VoxelType.Stone : VoxelType.Air); // Comportement simple si chunk non chargé
-        return new Voxel(VoxelType.Air); // Comportement par défaut si chunk non chargé
+        // Chunk non chargé (hors render distance, ou en dehors de la plage Y actuellement
+        // streamée) : Air par défaut, même convention que pour les positions X/Z non chargées.
+        return new Voxel(VoxelType.Air);
 
     }
 
@@ -197,8 +268,6 @@ public class World : MonoBehaviour
 
     public void SetVoxel(Vector3Int worldPos, VoxelType type)
     {
-         if(worldPos.y < 0 || worldPos.y >= Chunk.Height) return; // Ne peut pas modifier hors limites verticales
-
         Chunk chunk = GetChunkFromWorldPosition(worldPos);
         if (chunk != null)
         {
@@ -207,7 +276,10 @@ public class World : MonoBehaviour
         }
         else
         {
-            Debug.LogWarning($"Tentative de modification d'un voxel dans un chunk non chargé à {worldPos}");
+            // DIAG temporaire (roadmap phase SVO sous-étape 2) : inclut les coordonnées de chunk
+            // calculées pour diagnostiquer un éventuel décalage introduit par le passage au
+            // streaming 3D — à retirer une fois la cause confirmée.
+            Debug.LogWarning($"Tentative de modification d'un voxel dans un chunk non chargé à {worldPos} (chunkCoord calculé = {GetChunkCoordsFromWorldPos(worldPos)})");
             // Idéalement, il faudrait charger le chunk ou mettre en file d'attente la modification
         }
     }

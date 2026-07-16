@@ -237,6 +237,56 @@ public class World : MonoBehaviour
     // chargement initial.
     public Vector3 PlayerPosition => playerTransform != null ? playerTransform.position : Vector3.zero;
 
+    // Vrai si le chunk couvrant worldPos existe ET a terminé au moins un cycle de génération +
+    // meshing (cf. Chunk.IsMeshReady) — utilisé par FPSController pour savoir s'il peut relâcher
+    // le joueur après un grand déplacement instantané (téléportation), sans risquer de le voir
+    // traverser le décor pendant que le terrain de destination charge encore.
+    public bool IsGroundReadyAt(Vector3 worldPos)
+    {
+        Chunk chunk = GetChunkFromWorldPosition(worldPos);
+        return chunk != null && chunk.IsMeshReady;
+    }
+
+    // Vrai si clearanceVoxels voxels d'air consécutifs (en partant du sol de worldPos) sont
+    // libres verticalement — assez de place pour qu'un joueur y tienne sans être coincé dans un
+    // mur/sous le terrain. Utilisé après une téléportation (cf. FPSController) : IsGroundReadyAt
+    // garantit que le terrain de destination est chargé, mais pas que la position exacte visée
+    // n'est pas en plein dans la roche.
+    public bool HasClearance(Vector3 worldPos, int clearanceVoxels)
+    {
+        Vector3Int basePos = Vector3Int.FloorToInt(worldPos);
+        for (int dy = 0; dy < clearanceVoxels; dy++)
+        {
+            if (IsVoxelSolid(basePos + new Vector3Int(0, dy, 0)))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Scanne vers le haut depuis worldPos (X/Z inchangés) pour trouver la première position avec
+    // assez de dégagement vertical (cf. HasClearance) — utilisé pour replacer un joueur
+    // téléporté dans un mur ou sous le sol, sans changer sa position horizontale.
+    public bool TryFindSafeSpawnPosition(Vector3 worldPos, int clearanceVoxels, out Vector3 safePosition)
+    {
+        const int maxScan = 64; // au-delà, on renonce plutôt que de scanner indéfiniment
+        Vector3Int basePos = Vector3Int.FloorToInt(worldPos);
+
+        for (int dy = 0; dy < maxScan; dy++)
+        {
+            var candidate = new Vector3(worldPos.x, basePos.y + dy, worldPos.z);
+            if (HasClearance(candidate, clearanceVoxels))
+            {
+                safePosition = candidate;
+                return true;
+            }
+        }
+
+        safePosition = worldPos;
+        return false;
+    }
+
     public Chunk GetChunk(Vector3Int chunkPosition) {
          activeChunks.TryGetValue(chunkPosition, out Chunk chunk);
          return chunk;

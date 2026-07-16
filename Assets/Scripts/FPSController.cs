@@ -18,6 +18,17 @@ public class FPSController : MonoBehaviour
     [Header("References")]
     [SerializeField] private Transform cameraTransform;
 
+    [Header("Téléportation / grand déplacement")]
+    // Un déplacement d'un frame à l'autre au-delà de ce seuil est considéré comme un
+    // téléport (une téléportation future, un spawn, une correction de position...) plutôt
+    // qu'un mouvement normal — même en sprint, on ne parcourt jamais des centaines d'unités
+    // en un seul frame. Le joueur est alors gelé (cf. isFrozen) le temps que le terrain de
+    // destination ait fini de charger, pour éviter de tomber à travers le décor.
+    [SerializeField] private float teleportDistanceThreshold = 100f;
+    // Durée maximale de gel : garde-fou pour ne jamais bloquer le joueur indéfiniment si le
+    // terrain de destination ne finit jamais de charger pour une raison quelconque.
+    [SerializeField] private float maxFreezeDuration = 8f;
+
     // Components
     private CharacterController characterController;
     private PlayerInput playerInput;
@@ -33,10 +44,15 @@ public class FPSController : MonoBehaviour
     // Camera
     private float cameraPitch;
 
+    // Gel après un grand déplacement (cf. teleportDistanceThreshold ci-dessus)
+    private Vector3 previousPosition;
+    private bool isFrozen;
+    private float frozenSince;
+
     private void Awake()
     {
         characterController = GetComponent<CharacterController>();
-        
+
         // Lock and hide cursor
         Cursor.lockState = CursorLockMode.Locked;
         Cursor.visible = false;
@@ -49,12 +65,98 @@ public class FPSController : MonoBehaviour
             else
                 Debug.LogError("No camera found for FPSController!");
         }
+
+        // Initialisé à la position de spawn (pas Vector3.zero) : on ne veut détecter que les
+        // grands déplacements EN COURS DE JEU, pas geler systématiquement au premier frame si
+        // le point de spawn est loin de l'origine du monde.
+        previousPosition = transform.position;
     }
 
     private void Update()
     {
-        HandleMovement();
+        DetectTeleportAndFreeze();
+
+        if (isFrozen)
+        {
+            TryUnfreeze();
+        }
+        else
+        {
+            HandleMovement();
+        }
+
         HandleLook();
+        previousPosition = transform.position;
+    }
+
+    private void DetectTeleportAndFreeze()
+    {
+        if (isFrozen)
+        {
+            return; // déjà gelé, pas besoin de re-détecter
+        }
+
+        float distanceSq = (transform.position - previousPosition).sqrMagnitude;
+        if (distanceSq > teleportDistanceThreshold * teleportDistanceThreshold)
+        {
+            isFrozen = true;
+            frozenSince = Time.time;
+            velocity = Vector3.zero; // pas de chute héritée d'avant le saut une fois dégelé
+        }
+    }
+
+    private void TryUnfreeze()
+    {
+        bool groundReady = World.Instance != null && World.Instance.IsGroundReadyAt(transform.position);
+        bool timedOut = Time.time - frozenSince > maxFreezeDuration;
+
+        if (!groundReady && !timedOut)
+        {
+            return; // toujours en attente
+        }
+
+        if (groundReady)
+        {
+            // Le terrain est chargé, mais rien ne garantit que la position exacte visée par la
+            // téléportation n'est pas en plein dans un mur/sous le sol — à vérifier seulement une
+            // fois les données du chunk fiables (pas dans la branche timeout ci-dessous, où le
+            // chargement peut être resté incomplet).
+            EnsureNotEmbeddedInSolidGround();
+        }
+        else
+        {
+            Debug.LogWarning("FPSController: dégel forcé après le délai de sécurité, le terrain de destination n'a pas fini de charger à temps.");
+        }
+
+        isFrozen = false;
+    }
+
+    private void EnsureNotEmbeddedInSolidGround()
+    {
+        if (World.Instance == null)
+        {
+            return;
+        }
+
+        int clearance = Mathf.Max(1, Mathf.CeilToInt(characterController.height));
+        if (World.Instance.HasClearance(transform.position, clearance))
+        {
+            return; // pas de mur/sol traversé, rien à corriger
+        }
+
+        if (World.Instance.TryFindSafeSpawnPosition(transform.position, clearance, out Vector3 safePosition))
+        {
+            // Remettre à jour transform.position pendant que le CharacterController est actif
+            // se fait fight/écraser par son propre suivi interne — le désactiver le temps du
+            // déplacement est le pattern standard Unity pour un repositionnement "dur".
+            characterController.enabled = false;
+            transform.position = safePosition;
+            characterController.enabled = true;
+        }
+        else
+        {
+            Debug.LogWarning("FPSController: aucune position sûre trouvée au-dessus du point de téléportation (mur trop épais ?).");
+        }
     }
 
     private void HandleMovement()

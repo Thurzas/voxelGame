@@ -75,6 +75,14 @@ public class Chunk : MonoBehaviour
     private MeshCollider meshCollider;
     private Mesh generatedMesh; // Le mesh généré
 
+    // Vrai une fois que ce chunk a terminé au moins un cycle complet de génération + meshing
+    // (que le résultat soit un mesh plein, ou légitimement vide pour un chunk entièrement air —
+    // d'où un flag dédié plutôt que "meshCollider.sharedMesh != null", qui serait faux dans ce
+    // second cas alors que le chunk est bien "prêt"). Utilisé par World.IsGroundReadyAt pour
+    // savoir si l'état de ce chunk est réellement établi, pas seulement si son GameObject existe
+    // (tout le pipeline async heightmap + meshing GPU doit avoir fini).
+    public bool IsMeshReady { get; private set; }
+
     // --- État ---
     private bool needsMeshUpdate = false;
     // pourrait avoir d'autres états: isLoaded, isGenerated, etc.
@@ -566,6 +574,7 @@ public class Chunk : MonoBehaviour
         if (minSolidY > maxSolidY)
         {
             AssignMesh(new System.Collections.Generic.List<Vector3>(), new System.Collections.Generic.List<int>(), new System.Collections.Generic.List<Vector2>());
+            IsMeshReady = true;
             return;
         }
 
@@ -731,6 +740,7 @@ public class Chunk : MonoBehaviour
         }
 
         AssignMesh(vertices, triangles, uvs);
+        IsMeshReady = true;
     }
 
     // Greedy meshing : fusionne les faces adjacentes de même type/direction en quads plus

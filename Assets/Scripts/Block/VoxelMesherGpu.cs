@@ -18,6 +18,32 @@ using UnityEngine.Rendering;
 // tout un lot de premiers maillages de chunks en cours de chargement (constaté en jeu).
 public static class VoxelMesherGpu
 {
+    // Priorité de traitement d'une requête : le tier (catégorie) domine toujours, la distance ne
+    // départage qu'à tier égal. Décidé avec l'utilisateur après un bug observé en jeu : une
+    // téléportation laisse dans la file des remaillages LOD obsolètes dont la distance a été
+    // figée AVANT le saut (donc encore "proche" par erreur) — sans hiérarchie de catégorie, ces
+    // requêtes périmées pouvaient passer devant le premier maillage des chunks nouvellement
+    // chargés, dont la géométrie est bien plus urgente (un chunk absent = un trou visible, un
+    // chunk au mauvais LOD = juste moins de détail). Voir Chunk.RequestRemesh pour l'attribution
+    // du tier côté appelant.
+    public readonly struct RequestPriority : IComparable<RequestPriority>
+    {
+        public readonly int Tier; // plus petit = plus prioritaire
+        public readonly float DistanceSq;
+
+        public RequestPriority(int tier, float distanceSq)
+        {
+            Tier = tier;
+            DistanceSq = distanceSq;
+        }
+
+        public int CompareTo(RequestPriority other)
+        {
+            int tierCompare = Tier.CompareTo(other.Tier);
+            return tierCompare != 0 ? tierCompare : DistanceSq.CompareTo(other.DistanceSq);
+        }
+    }
+
     public readonly struct Face
     {
         public readonly int X;
@@ -72,11 +98,11 @@ public static class VoxelMesherGpu
         public readonly int PaddedWidth;
         public readonly int PaddedHeightStride;
         public readonly int LoY;
-        public readonly float Priority; // plus petit = traité en premier (ex: distance au carré au joueur)
+        public readonly RequestPriority Priority;
         public readonly Action<Face[], int> OnComplete;
 
         public PendingRequest(uint[] paddedVoxels, int paddedLength, int innerWidth, int innerHeight, int innerDepth,
-            int paddedWidth, int paddedHeightStride, int loY, float priority, Action<Face[], int> onComplete)
+            int paddedWidth, int paddedHeightStride, int loY, RequestPriority priority, Action<Face[], int> onComplete)
         {
             PaddedVoxels = paddedVoxels;
             PaddedLength = paddedLength;
@@ -140,13 +166,13 @@ public static class VoxelMesherGpu
     }
 
     // paddedVoxels : buffer aplati (voir VoxelFaceCulling.compute pour la disposition exacte),
-    // longueur paddedLength. priority : plus petit = traité avant les autres requêtes en
-    // attente dès qu'un slot se libère (typiquement la distance au carré au joueur — cf.
-    // Chunk.GenerateMeshGpu). onComplete est appelé avec la liste des faces exposées
-    // (coordonnées locales au chunk) une fois le readback GPU terminé, potentiellement
-    // plusieurs frames plus tard.
+    // longueur paddedLength. priority : cf. RequestPriority — traité avant les autres requêtes
+    // en attente dès qu'un slot se libère (tier d'abord, distance au joueur en départage — cf.
+    // Chunk.RequestRemesh). onComplete est appelé avec la liste des faces exposées (coordonnées
+    // locales au chunk) une fois le readback GPU terminé, potentiellement plusieurs frames plus
+    // tard.
     public static void RequestFaces(uint[] paddedVoxels, int paddedLength, int innerWidth, int innerHeight,
-        int innerDepth, int paddedWidth, int paddedHeightStride, int loY, float priority, Action<Face[], int> onComplete)
+        int innerDepth, int paddedWidth, int paddedHeightStride, int loY, RequestPriority priority, Action<Face[], int> onComplete)
     {
         pending.Add(new PendingRequest(paddedVoxels, paddedLength, innerWidth, innerHeight, innerDepth,
             paddedWidth, paddedHeightStride, loY, priority, onComplete));
@@ -170,7 +196,7 @@ public static class VoxelMesherGpu
         int best = 0;
         for (int i = 1; i < pending.Count; i++)
         {
-            if (pending[i].Priority < pending[best].Priority)
+            if (pending[i].Priority.CompareTo(pending[best].Priority) < 0)
             {
                 best = i;
             }

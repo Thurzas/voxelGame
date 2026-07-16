@@ -443,6 +443,10 @@ PrefabInstance:
       value: 
       objectReference: {fileID: 355658877}
     - target: {fileID: 2586474468756115820, guid: ca11eeb3129c9d446bdd16374c7f67dc, type: 3}
+      propertyPath: lodSettings
+      value: 
+      objectReference: {fileID: 11400000, guid: 1615c0d0ada9baf4d947eb3dcbeb1c04, type: 2}
+    - target: {fileID: 2586474468756115820, guid: ca11eeb3129c9d446bdd16374c7f67dc, type: 3}
       propertyPath: renderDistance
       value: 6
       objectReference: {fileID: 0}

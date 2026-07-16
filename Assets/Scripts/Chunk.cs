@@ -79,6 +79,28 @@ public class Chunk : MonoBehaviour
     private bool needsMeshUpdate = false;
     // pourrait avoir d'autres états: isLoaded, isGenerated, etc.
 
+    // Catégories de remaillage, par priorité décroissante (décision avec l'utilisateur après un
+    // bug de téléportation : sans hiérarchie, une requête LOD obsolète — distance figée avant un
+    // grand déplacement — pouvait passer devant le premier maillage d'un chunk nouvellement
+    // chargé, alors qu'un chunk absent est un défaut bien plus visible qu'un mauvais LOD).
+    private const int PriorityTierEdit = 0;     // édition de voxel (SetVoxel), y compris chunk voisin notifié
+    private const int PriorityTierCreation = 1; // premier maillage après chargement/génération
+    private const int PriorityTierLod = 2;      // changement de palier de LOD sur un chunk déjà visible
+
+    // Catégorie la plus prioritaire demandée depuis le dernier remaillage effectif — ne
+    // redescend jamais tant que needsMeshUpdate n'a pas été consommé (cf. RequestRemesh),
+    // pour qu'une édition survenant après une simple demande de LOD ne se fasse pas éclipser.
+    private int pendingPriorityTier = PriorityTierLod;
+
+    void RequestRemesh(int tier)
+    {
+        needsMeshUpdate = true;
+        if (tier < pendingPriorityTier)
+        {
+            pendingPriorityTier = tier;
+        }
+    }
+
     void Awake()
     {
         meshFilter = GetComponent<MeshFilter>();
@@ -216,7 +238,7 @@ public class Chunk : MonoBehaviour
         BuildBricksFromScratch();
 
         // Marquer pour la génération initiale du mesh
-        needsMeshUpdate = true;
+        RequestRemesh(PriorityTierCreation);
     }
 
     // Méthode pour obtenir/définir un voxel (coordonnées locales au chunk)
@@ -276,7 +298,7 @@ public class Chunk : MonoBehaviour
                      bricks[brickIdx].Expand(Allocator.Persistent);
                  }
                  bricks[brickIdx].Set(wx, wy, wz, new Voxel(type));
-                 needsMeshUpdate = true; // Le mesh doit être regénéré
+                 RequestRemesh(PriorityTierEdit); // Le mesh doit être regénéré
 
                  // Étend la plage Y solide utilisée par le meshing (cf. minSolidY/maxSolidY) :
                  // reste sûr même après une suppression (ne rétrécit jamais la plage).
@@ -323,10 +345,49 @@ public class Chunk : MonoBehaviour
     }
 
 
+    // Dernier pas de LOD (puissance de 2, 1 = détail plein) utilisé pour construire le mesh
+    // actuel — -1 tant qu'aucun mesh n'a encore été généré. Comparé à ComputeLodStride() à
+    // chaque frame pour déclencher un remaillage quand le joueur s'approche/s'éloigne assez
+    // pour changer de niveau, même sans édition de voxel (cf. roadmap phase SVO sous-étape 3).
+    private int lastMeshedLodStride = -1;
+
+    // Vrai entre le moment où une requête de meshing GPU est envoyée (RequestFaces) et celui où
+    // son résultat revient (OnGpuFacesReady). Empêche UpdateChunk de déclencher une SECONDE
+    // requête pendant que la première attend encore dans la file de VoxelMesherGpu : sans cette
+    // garde, la seconde écraserait le buffer d'instance gpuPaddedBuffer (réutilisé pour éviter
+    // une réallocation par remaillage) avant que son contenu ait pu être copié côté GPU pour la
+    // première requête — corruption constatée en jeu à haute vitesse de déplacement, quand les
+    // changements de palier de LOD redéclenchent des remaillages plus vite que le pool de
+    // dispatchs GPU (4 slots) ne peut les absorber.
+    private bool meshRequestInFlight;
+
+    // Puissance de 2 dérivée de la distance au joueur via World.lodSettings (1 = détail plein).
+    // Toujours 1 si aucune config LOD n'est assignée (comportement identique à avant le LOD).
+    int ComputeLodStride()
+    {
+        if (World.Instance == null || World.Instance.lodSettings == null)
+        {
+            return 1;
+        }
+
+        Vector3 chunkCenter = transform.position + (Vector3.one * (Size * 0.5f));
+        float distance = Vector3.Distance(chunkCenter, World.Instance.PlayerPosition);
+        return World.Instance.lodSettings.GetStrideForDistance(distance, Size);
+    }
+
     // Méthode appelée régulièrement (ex: dans Update ou via un gestionnaire) pour reconstruire le mesh si nécessaire
     public void UpdateChunk()
     {
-        if (needsMeshUpdate)
+        // Un changement de niveau de LOD force un remaillage même sans édition de voxel (le
+        // joueur qui s'approche/s'éloigne doit voir le détail changer).
+        if (ComputeLodStride() != lastMeshedLodStride)
+        {
+            RequestRemesh(PriorityTierLod);
+        }
+
+        // Ne jamais démarrer une deuxième requête tant qu'une précédente est encore en vol (cf.
+        // meshRequestInFlight) : needsMeshUpdate reste true et sera retenté à la frame suivante.
+        if (needsMeshUpdate && !meshRequestInFlight)
         {
             needsMeshUpdate = false;
             GenerateMeshWithShader(); // Ou GenerateMeshCPU() pour une version CPU
@@ -473,8 +534,10 @@ public class Chunk : MonoBehaviour
         else if (y == Size - 1) World.Instance.GetChunk(chunkPosition + new Vector3Int(0,1,0))?.MarkForMeshUpdate();
     }
 
+     // Appelé uniquement par CheckNeighborChunksForUpdate (notification de voisin suite à une
+     // édition de voxel) : toujours tier Edit.
      public void MarkForMeshUpdate() {
-        needsMeshUpdate = true;
+        RequestRemesh(PriorityTierEdit);
     }
 
 
@@ -490,13 +553,16 @@ public class Chunk : MonoBehaviour
         GenerateMeshGpu();
     }
 
-    // Buffer aplati et paddé (1 voxel de bordure sur les 3 axes, cf. VoxelFaceCulling.compute)
-    // envoyé au compute shader ; réutilisé d'un remaillage à l'autre pour éviter une
-    // réallocation à chaque frame où un chunk change.
+    // Buffer aplati et paddé (1 "voxel coarse" de bordure sur les 3 axes, cf.
+    // VoxelFaceCulling.compute) envoyé au compute shader ; réutilisé d'un remaillage à l'autre
+    // pour éviter une réallocation à chaque frame où un chunk change.
     private uint[] gpuPaddedBuffer;
 
     void GenerateMeshGpu()
     {
+        int stride = ComputeLodStride();
+        lastMeshedLodStride = stride;
+
         if (minSolidY > maxSolidY)
         {
             AssignMesh(new System.Collections.Generic.List<Vector3>(), new System.Collections.Generic.List<int>(), new System.Collections.Generic.List<Vector2>());
@@ -508,13 +574,24 @@ public class Chunk : MonoBehaviour
         // que GenerateMeshGreedy.
         MaterializeScratch();
 
+        // Sous-échantillonnage par pas de puissance de 2 (roadmap phase SVO sous-étape 3,
+        // décision avec l'utilisateur) : le mesher lit un vote majoritaire par bloc stride³
+        // (cf. DominantVoxelType) au lieu de chaque voxel.
+        // stride=1 reproduit exactement l'ancien comportement pleine résolution — vérifié terme à
+        // terme lors de l'écriture (chaque formule ci-dessous se réduit à l'original si stride=1).
+        int coarseSize = Size / stride;
+
         int loY = Mathf.Clamp(minSolidY - 1, 0, Size - 1);
         int hiYExclusive = Mathf.Clamp(maxSolidY + 2, 0, Size);
-        int innerHeight = hiYExclusive - loY;
+        // Bornes Y en unités "coarse" : coarseHiYExclusive > coarseLoY est garanti dès lors que
+        // hiYExclusive > loY (toujours vrai ici), pas besoin de re-vérifier.
+        int coarseLoY = loY / stride;
+        int coarseHiYExclusive = Mathf.CeilToInt(hiYExclusive / (float)stride);
+        int innerHeight = coarseHiYExclusive - coarseLoY;
 
-        int paddedWidth = Size + 2;
-        int paddedDepth = Size + 2;
-        int paddedHeightStride = innerHeight + 2; // padding réel sur Y désormais (voisin vertical possible)
+        int paddedWidth = coarseSize + 2;
+        int paddedDepth = coarseSize + 2;
+        int paddedHeightStride = innerHeight + 2; // padding réel sur Y (voisin vertical possible)
         int paddedLength = paddedWidth * paddedHeightStride * paddedDepth;
 
         if (gpuPaddedBuffer == null || gpuPaddedBuffer.Length < paddedLength)
@@ -522,32 +599,33 @@ public class Chunk : MonoBehaviour
             gpuPaddedBuffer = new uint[paddedLength];
         }
 
-        // Intérieur : copie en bloc depuis scratch (une ligne X à la fois). py décalé de +1
-        // (padding Y, comme px/pz le sont déjà de +1 pour le padding X/Z).
-        for (int pz = 1; pz <= Size; pz++)
+        // Intérieur : vote majoritaire sur chaque bloc stride³ (coûte au total le même nombre de
+        // lectures qu'un scan plein du chunk, quel que soit stride — voir DominantVoxelType).
+        for (int pz = 1; pz <= coarseSize; pz++)
         {
-            int z = pz - 1;
+            int z = (pz - 1) * stride;
             for (int py = 1; py <= innerHeight; py++)
             {
-                int y = (py - 1) + loY;
-                int scratchRowBase = FlatIndex(0, y, z);
+                int y = ((py - 1) + coarseLoY) * stride;
                 int paddedRowBase = 1 + (py * paddedWidth) + (pz * paddedWidth * paddedHeightStride);
-                for (int px = 0; px < Size; px++)
+                for (int cx = 0; cx < coarseSize; cx++)
                 {
-                    gpuPaddedBuffer[paddedRowBase + px] = (uint)scratch[scratchRowBase + px];
+                    int x = cx * stride;
+                    gpuPaddedBuffer[paddedRowBase + cx] = (uint)DominantVoxelType(x, y, z, stride);
                 }
             }
         }
 
         // Bordures X (px=0 et px=paddedWidth-1) : seule la solidité importe (jamais utilisées
-        // comme "self", cf. VoxelFaceCulling.compute), interrogée via le voisin/World.
-        for (int pz = 1; pz <= Size; pz++)
+        // comme "self", cf. VoxelFaceCulling.compute), échantillonnée un pas "coarse" plus loin
+        // (±stride, cohérent avec l'échantillonnage de l'intérieur) via le voisin/World.
+        for (int pz = 1; pz <= coarseSize; pz++)
         {
-            int z = pz - 1;
+            int z = (pz - 1) * stride;
             for (int py = 1; py <= innerHeight; py++)
             {
-                int y = (py - 1) + loY;
-                bool solidLeft = GetVoxelInfoFast(-1, y, z, out _);
+                int y = ((py - 1) + coarseLoY) * stride;
+                bool solidLeft = GetVoxelInfoFast(-stride, y, z, out _);
                 bool solidRight = GetVoxelInfoFast(Size, y, z, out _);
                 int rowBase = (py * paddedWidth) + (pz * paddedWidth * paddedHeightStride);
                 gpuPaddedBuffer[rowBase] = solidLeft ? 1u : 0u;
@@ -559,11 +637,11 @@ public class Chunk : MonoBehaviour
         // voisin par un thread, mais autant les remplir correctement).
         for (int px = 0; px < paddedWidth; px++)
         {
-            int x = px - 1;
+            int x = (px - 1) * stride;
             for (int py = 1; py <= innerHeight; py++)
             {
-                int y = (py - 1) + loY;
-                bool solidFront = GetVoxelInfoFast(x, y, -1, out _);
+                int y = ((py - 1) + coarseLoY) * stride;
+                bool solidFront = GetVoxelInfoFast(x, y, -stride, out _);
                 bool solidBack = GetVoxelInfoFast(x, y, Size, out _);
                 int frontBase = px + (py * paddedWidth);
                 int backBase = px + (py * paddedWidth) + ((paddedDepth - 1) * paddedWidth * paddedHeightStride);
@@ -573,17 +651,17 @@ public class Chunk : MonoBehaviour
         }
 
         // Bordures Y (py=0 et py=paddedHeightStride-1) : voisin vertical (chunk au-dessus/en
-        // dessous) si loY/hiYExclusive atteignent le vrai bord du chunk, sinon toujours de
-        // l'air garanti par construction (cf. minSolidY/maxSolidY) — GetVoxelInfoFast gère les
-        // deux cas uniformément, exactement comme pour X/Z.
+        // dessous), un pas "coarse" au-delà de la plage intérieure.
+        int belowY = (coarseLoY - 1) * stride;
+        int aboveY = coarseHiYExclusive * stride;
         for (int pz = 0; pz < paddedDepth; pz++)
         {
-            int z = pz - 1;
+            int z = (pz - 1) * stride;
             for (int px = 0; px < paddedWidth; px++)
             {
-                int x = px - 1;
-                bool solidBelow = GetVoxelInfoFast(x, loY - 1, z, out _);
-                bool solidAbove = GetVoxelInfoFast(x, hiYExclusive, z, out _);
+                int x = (px - 1) * stride;
+                bool solidBelow = GetVoxelInfoFast(x, belowY, z, out _);
+                bool solidAbove = GetVoxelInfoFast(x, aboveY, z, out _);
                 int belowBase = px + (0 * paddedWidth) + (pz * paddedWidth * paddedHeightStride);
                 int aboveBase = px + ((paddedHeightStride - 1) * paddedWidth) + (pz * paddedWidth * paddedHeightStride);
                 gpuPaddedBuffer[belowBase] = solidBelow ? 1u : 0u;
@@ -591,25 +669,35 @@ public class Chunk : MonoBehaviour
             }
         }
 
-        int capturedLoY = loY;
-        // Priorité = distance au carré au joueur : un remaillage déclenché par une édition
-        // (SetVoxel) ou, plus tard, par la simulation de fluides passe devant un lot de premiers
-        // maillages de chunks lointains encore en attente, au lieu de faire la queue derrière eux
-        // (cf. VoxelMesherGpu, pool de dispatchs concurrents priorisé).
-        float priority = 0f;
+        // Priorité : tier (Edit/Creation/Lod, cf. pendingPriorityTier) d'abord, distance au carré
+        // au joueur en départage seulement — un remaillage d'édition ou un premier maillage de
+        // chunk passe toujours devant un ajustement de LOD, même si ce dernier a été enfilé avec
+        // une distance alors plus petite (cf. VoxelMesherGpu.RequestPriority pour le pourquoi).
+        float distanceSq = 0f;
         if (World.Instance != null)
         {
             Vector3 chunkCenter = transform.position + (Vector3.one * (Size * 0.5f));
-            priority = (chunkCenter - World.Instance.PlayerPosition).sqrMagnitude;
+            distanceSq = (chunkCenter - World.Instance.PlayerPosition).sqrMagnitude;
         }
-        VoxelMesherGpu.RequestFaces(gpuPaddedBuffer, paddedLength, Size, innerHeight, Size, paddedWidth, paddedHeightStride, capturedLoY, priority, OnGpuFacesReady);
+        var priority = new VoxelMesherGpu.RequestPriority(pendingPriorityTier, distanceSq);
+        pendingPriorityTier = PriorityTierLod; // consommé : redescend au tier par défaut pour le prochain cycle
+
+        meshRequestInFlight = true;
+        // "stride" capturé par la fermeture plutôt que lu depuis un champ d'instance partagé :
+        // reste correct même si (malgré la garde meshRequestInFlight) plusieurs requêtes de ce
+        // chunk finissaient par se chevaucher, chacune reconstruit alors le mesh à sa propre
+        // échelle plutôt que celle de la requête la plus récente.
+        VoxelMesherGpu.RequestFaces(gpuPaddedBuffer, paddedLength, coarseSize, innerHeight, coarseSize, paddedWidth, paddedHeightStride, coarseLoY, priority,
+            (faces, count) => OnGpuFacesReady(faces, count, stride));
     }
 
     // Callback du readback GPU (peut arriver plusieurs frames après GenerateMeshGpu).
-    // Reconstruit le mesh à partir de la liste de faces exposées, en réutilisant
-    // AddGreedyFace avec width=height=1 (pas de fusion côté GPU pour cette étape).
-    void OnGpuFacesReady(VoxelMesherGpu.Face[] faces, int count)
+    // Reconstruit le mesh à partir de la liste de faces exposées (coordonnées "coarse", à
+    // remettre à l'échelle via stride), en réutilisant AddGreedyFace avec width=height=stride
+    // (pas de fusion entre faces coarse adjacentes de même type pour cette étape).
+    void OnGpuFacesReady(VoxelMesherGpu.Face[] faces, int count, int stride)
     {
+        meshRequestInFlight = false;
         if (this == null) return;
 
         var vertices = new System.Collections.Generic.List<Vector3>();
@@ -623,22 +711,23 @@ public class Chunk : MonoBehaviour
             int axis = f.Direction / 2;
             bool back = (f.Direction & 1) != 0;
 
-            // Le voxel plein occupe [pos, pos+1[ sur chaque axe : la face -axis est au plan
-            // "pos", la face +axis au plan "pos+1" (dérivation identique à celle utilisée
-            // par GenerateMeshGreedy pour basePos3[axis], cf. commentaire d'AddGreedyFace).
-            Vector3Int basePos = new Vector3Int(f.X, f.Y, f.Z);
+            // Le "voxel coarse" plein occupe [pos×stride, pos×stride+stride[ sur chaque axe : la
+            // face -axis est au plan "pos×stride", la face +axis au plan "pos×stride+stride"
+            // (généralisation de la dérivation pleine résolution, cf. commentaire d'AddGreedyFace
+            // — stride=1 s'y réduit exactement).
+            Vector3Int basePos = new Vector3Int(f.X * stride, f.Y * stride, f.Z * stride);
             if (!back)
             {
                 switch (axis)
                 {
-                    case 0: basePos.x += 1; break;
-                    case 1: basePos.y += 1; break;
-                    default: basePos.z += 1; break;
+                    case 0: basePos.x += stride; break;
+                    case 1: basePos.y += stride; break;
+                    default: basePos.z += stride; break;
                 }
             }
 
             Rect uvRect = VoxelTypeToTexture(f.Type, DirectionVector(axis, back));
-            vertexIndex = AddGreedyFace(vertices, triangles, uvs, vertexIndex, basePos, axis, back, 1, 1, uvRect);
+            vertexIndex = AddGreedyFace(vertices, triangles, uvs, vertexIndex, basePos, axis, back, stride, stride, uvRect);
         }
 
         AssignMesh(vertices, triangles, uvs);
@@ -810,7 +899,10 @@ public class Chunk : MonoBehaviour
         // phase 3/4).
 
         meshFilter.mesh = generatedMesh;
-        meshCollider.sharedMesh = generatedMesh; // Mettre à jour le collider physique
+        // Un chunk sans face (entièrement air, ou entièrement solide et enfermé) n'a pas besoin
+        // de collider — assigner un Mesh à 0 sommet déclenche un avertissement Unity ("doesn't
+        // have any vertices") sans rien casser, mais autant l'éviter proprement.
+        meshCollider.sharedMesh = vertices.Count > 0 ? generatedMesh : null;
     }
 
     // Recopie les briques dans "scratch" (tableau plat) en une seule passe avant le
@@ -894,6 +986,64 @@ public class Chunk : MonoBehaviour
             return World.Instance.IsVoxelSolid(GetWorldPosition(x, y, z));
         }
         return false;
+    }
+
+    // Buffer de comptage réutilisé par DominantVoxelType (évite une allocation par bloc coarse) ;
+    // 64 couvre tous les VoxelType actuels avec une bonne marge.
+    private static readonly int[] lodVoteCounts = new int[64];
+
+    // Vote majoritaire sur le bloc stride³ dont (baseX,baseY,baseZ) est le coin d'origine (déjà
+    // garanti dans les limites du chunk par l'appelant). Nécessaire pour le LOD par
+    // sous-échantillonnage (roadmap phase SVO sous-étape 3) : échantillonner un seul coin
+    // "le plus proche" loupe systématiquement la fine couche de terre/herbe en surface dès que
+    // stride dépasse son épaisseur (~4 voxels), donnant un terrain lointain qui semble presque
+    // entièrement en pierre (bug constaté en jeu). Coûte au total le même nombre de lectures
+    // qu'un scan plein du chunk quel que soit stride (coarseSize³ blocs × stride³ voxels = Size³).
+    // En cas d'égalité air/solide, privilégie le solide (une fine couche de surface pèse déjà
+    // moins que le volume solide en dessous).
+    VoxelType DominantVoxelType(int baseX, int baseY, int baseZ, int stride)
+    {
+        if (stride == 1)
+        {
+            return scratch[FlatIndex(baseX, baseY, baseZ)];
+        }
+
+        System.Array.Clear(lodVoteCounts, 0, lodVoteCounts.Length);
+        int airCount = 0;
+        int bestNonAirCount = 0;
+        VoxelType bestNonAir = VoxelType.Air;
+
+        for (int dz = 0; dz < stride; dz++)
+        {
+            for (int dy = 0; dy < stride; dy++)
+            {
+                int idx = FlatIndex(baseX, baseY + dy, baseZ + dz);
+                for (int dx = 0; dx < stride; dx++, idx++)
+                {
+                    VoxelType t = scratch[idx];
+                    if (t == VoxelType.Air)
+                    {
+                        airCount++;
+                        continue;
+                    }
+
+                    int typeIndex = (int)t;
+                    if (typeIndex >= lodVoteCounts.Length)
+                    {
+                        continue; // type hors marge prévue : rare, ignoré pour ce vote
+                    }
+
+                    int newCount = ++lodVoteCounts[typeIndex];
+                    if (newCount > bestNonAirCount)
+                    {
+                        bestNonAirCount = newCount;
+                        bestNonAir = t;
+                    }
+                }
+            }
+        }
+
+        return airCount > bestNonAirCount ? VoxelType.Air : bestNonAir;
     }
 
     // Encode/decode un (VoxelType, direction) dans le masque de greedy meshing.

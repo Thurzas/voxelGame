@@ -16,6 +16,11 @@ public class World : MonoBehaviour
     public int worldSeed;
     [SerializeField] private NoiseSettings terrainSettings;
 
+    // Config LOD par distance (roadmap phase SVO sous-étape 3) — ajustable dans l'Éditeur sans
+    // recompiler, cf. LODSettings/LODSettingsEditor. Null accepté : Chunk retombe alors sur le
+    // détail plein (LOD 0) partout, comportement identique à avant l'introduction du LOD.
+    public LODSettings lodSettings;
+
     // Budget de temps (ms) accordé chaque frame pour finaliser des chunks dont la
     // heightmap GPU est prête (remplissage voxels + décoration + meshing + collider) —
     // étale ce travail sur plusieurs frames au lieu de tout faire d'un coup dès qu'un lot
